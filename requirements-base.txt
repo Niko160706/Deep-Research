@@ -1,0 +1,45 @@
+# ============================================================
+# Deep Research AI Agent — BASE dependencies
+# (everything needed to run the mechanical "Muscle" pipeline,
+#  plus lightweight graph/entity tooling. 0 LLM tokens involved.)
+# ============================================================
+
+# Core Orchestration & Data Models
+pydantic>=2.7
+pyyaml>=6.0
+rich>=13.7
+
+# Async Web Scraper & HTML Cleaning
+aiohttp>=3.9
+aiohttp-socks>=0.8
+pypdf>=4.0
+tenacity>=8.2
+beautifulsoup4>=4.12
+lxml>=5.2
+trafilatura>=1.6
+rank-bm25>=0.2.2
+langdetect>=1.0.9
+tldextract>=5.1
+
+# Storage & Mathematics
+numpy>=1.24
+pandas>=2.1
+pyarrow>=14.0
+
+# Graph Engine & Entity Matching
+networkx>=3.2.1
+rapidfuzz>=3.5
+
+# API Client (Phase 2 LLM synthesis)
+#   - google-genai  : provider utama, Google AI Studio (GEMINI_API_KEY)
+#   - openai        : fallback OpenAI-compatible (OpenRouter / Groq)
+google-genai>=1.0
+openai>=1.3
+
+# Runtime monitoring (RAM / resource acceptance tests)
+psutil>=5.9
+
+# Dev
+pytest>=8.2
+pytest-asyncio>=0.23
+ruff>=0.5

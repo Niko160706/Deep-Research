@@ -1,0 +1,106 @@
+"""Cognitive stream (Phase 2) — LLM-powered critic loop + report synthesis.
+
+The muscle (Phase 1) produces clean, gated documents; the brain turns them
+into the final investigation narrative (with gap-driven follow-up research)
+without ever crashing the run.
+"""
+
+from drx.brain.batching import (
+    count_tokens,
+    estimate_cost_usd,
+    mmr_indices,
+    pack_batches,
+    truncate_tokens,
+)
+from drx.brain.critic import (
+    CriticResult,
+    SuggestedNode,
+    analyze_fact_gaps,
+    analyze_graph_gaps,
+    build_critic_prompt,
+    build_critic_system_prompt,
+)
+from drx.brain.extractors import (
+    ExtractionResult,
+    GroundedTriple,
+    extract_triples,
+    triples_to_facts,
+    validate_triple,
+)
+from drx.brain.llm_synthesizer import (
+    LLMResult,
+    ProviderSpec,
+    ReportSidecar,
+    Segment,
+    VerifiedFact,
+    build_client,
+    build_sidecar,
+    build_system_prompt,
+    build_user_prompt,
+    estimate_tokens,
+    extract_json_block,
+    fit_user_prompt_to_token_cap,
+    format_llm_report,
+    gemini_thinking_config,
+    generate_with_failover,
+    load_documents,
+    model_chain,
+    resolve_provider,
+    resolve_providers,
+    select_segments,
+    split_llm_answer,
+    synthesize_report,
+    write_llm_report,
+    write_report_sidecar,
+)
+from drx.brain.query_planner import (
+    QueryPlanResult,
+    plan_queries,
+    seeded_queries,
+)
+
+__all__ = [
+    "CriticResult",
+    "ExtractionResult",
+    "GroundedTriple",
+    "LLMResult",
+    "ProviderSpec",
+    "QueryPlanResult",
+    "ReportSidecar",
+    "Segment",
+    "SuggestedNode",
+    "VerifiedFact",
+    "analyze_fact_gaps",
+    "analyze_graph_gaps",
+    "build_client",
+    "build_critic_prompt",
+    "build_critic_system_prompt",
+    "build_sidecar",
+    "build_system_prompt",
+    "build_user_prompt",
+    "count_tokens",
+    "estimate_cost_usd",
+    "estimate_tokens",
+    "extract_json_block",
+    "extract_triples",
+    "fit_user_prompt_to_token_cap",
+    "format_llm_report",
+    "gemini_thinking_config",
+    "generate_with_failover",
+    "load_documents",
+    "mmr_indices",
+    "model_chain",
+    "pack_batches",
+    "plan_queries",
+    "resolve_provider",
+    "resolve_providers",
+    "seeded_queries",
+    "select_segments",
+    "split_llm_answer",
+    "synthesize_report",
+    "triples_to_facts",
+    "truncate_tokens",
+    "validate_triple",
+    "write_llm_report",
+    "write_report_sidecar",
+]

@@ -1,0 +1,36 @@
+# Deep Research AI Agent — local search stack
+#   SearXNG (meta-search) + Valkey (cache) + TOR (SOCKS proxy)
+#
+# Jalankan:  docker compose up -d
+# Hentikan:  docker compose down
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - UWSGI_WORKERS=1          # batasi worker -> RAM ~200MB
+      - UWSGI_THREADS=2
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    mem_limit: 200m
+    depends_on:
+      - valkey
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: valkey
+    restart: unless-stopped
+    mem_limit: 50m
+
+  tor:
+    image: dperson/torproxy:latest
+    container_name: tor
+    restart: unless-stopped
+    ports:
+      - "9050:9050"              # SOCKS5 proxy untuk outbound SearXNG & fallback scraper
+    mem_limit: 50m

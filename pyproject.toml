@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drx"
+version = "0.1.0"
+description = "Deep Research AI Agent - Dual-Stream investigative pipeline"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+    "BLE001",   # broad `except Exception` is intentional for graceful degradation
+    "S110",     # try/except/pass is intentional around optional dependencies
+    "SIM117",   # nested `with` is clearer for timeout-scoped aiohttp sessions
+    "SIM102",   # nested `if` is more readable in the orchestrator guard
+]

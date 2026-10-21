@@ -1,0 +1,23 @@
+# ============================================================
+# Deep Research AI Agent — top-level requirements
+#   pip install -r requirements.txt
+#
+# The base file keeps the mechanical pipeline lightweight; this
+# file adds the Phase 3 production extras (interactive graph,
+# token-accurate batching, entity resolution, PDF extraction).
+# ============================================================
+
+-r requirements-base.txt
+
+# Interactive graph canvas (PyVis / vis.js, dark industrial theme)
+pyvis>=0.3.2
+
+# Token counting & batching guard (3000-3500 token LLM batches)
+tiktoken>=0.5.0
+
+# Entity resolution & fuzzy matching (PT Jaya Abadi == PT. Jaya Abadi)
+rapidfuzz>=3.5.0
+
+# Official-document PDF extraction (SK, LHKPN, berita acara)
+pdfplumber>=0.10.0
+pypdf>=3.17.0

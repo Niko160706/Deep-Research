@@ -1,0 +1,33 @@
+# SearXNG settings — JSON API + TOR outbound proxy
+# Dipasang ke container via docker-compose (read-only).
+
+use_default_settings: true
+
+general:
+  instance_name: "Deep Research SearXNG"
+  debug: false
+
+server:
+  secret_key: "deep-research-change-me-to-a-random-secret"
+  limiter: false            # matikan rate-limit agar API lokal lancar
+  image_proxy: false
+  bind_address: "0.0.0.0"
+  port: 8080
+
+# Aktifkan output JSON bersih untuk konsumsi REST API.
+search:
+  formats:
+    - html
+    - json
+
+# Semua request outbound SearXNG lewat SOCKS5 TOR (container `tor`).
+# Format resmi SearXNG memakai key `all://` dengan daftar proxy.
+outgoing:
+  request_timeout: 5.0
+  proxies:
+    all://:
+      - socks5h://tor:9050
+
+# Cache & session di Valkey.
+redis:
+  url: redis://valkey:6379/0

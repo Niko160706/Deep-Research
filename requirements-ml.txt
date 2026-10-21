@@ -1,0 +1,24 @@
+# ============================================================
+# Deep Research AI Agent — ML & browser stack (heavy / optional)
+#
+# INSTALL ORDER MATTERS:
+#   1. pip install -r requirements-base.txt
+#   2. pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   3. pip install -r requirements-ml.txt
+#   4. playwright install --with-deps chromium
+#
+# NOTE: PyTorch is intentionally NOT listed here. It must be installed
+# from the CPU-only index (step 2) to avoid pulling the ~5 GB CUDA wheel.
+# ============================================================
+
+# Local INT8 embeddings (BGE-small) — needs the CPU torch from step 2
+sentence-transformers>=2.2.2
+
+# Vector search index (no GPU needed)
+faiss-cpu>=1.7.4
+
+# Optional ONNX runtime — lighter embedding path than torch (~80 MB)
+onnxruntime>=1.16.0
+
+# JS-heavy page fallback (browser binary installed separately, Chromium only)
+playwright>=1.40
