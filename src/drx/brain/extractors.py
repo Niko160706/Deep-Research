@@ -34,6 +34,7 @@ from drx.brain.llm_synthesizer import (
 )
 from drx.config import LLMConfig
 from drx.models import Document, Fact, SourceRef
+from drx.textutil import compact_short_label
 
 log = logging.getLogger("drx.brain.extractors")
 
@@ -48,7 +49,12 @@ _MIN_QUOTE = 8
 
 
 class GroundedTriple(BaseModel):
-    """Triple + mandatory grounding fields validated by Python."""
+    """Triple + mandatory grounding fields validated by Python.
+
+    ``subject_short_label`` / ``object_short_label`` are display-only card
+    labels (1-3 words, max 20 chars). The full grounded subject/object remain
+    untouched; short labels are never used to validate evidence.
+    """
 
     subject: str
     predicate: str
@@ -57,6 +63,8 @@ class GroundedTriple(BaseModel):
     short_quote: str
     confidence: float = Field(default=0.6, ge=0.0, le=1.0)
     source_url: str = ""  # filled from the chunk map, never trusted from the LLM
+    subject_short_label: str = ""
+    object_short_label: str = ""
 
 
 class ExtractionResult(BaseModel):
@@ -168,8 +176,9 @@ _EXTRACTOR_SYSTEM = """Anda adalah OSINT Triple Extractor yang bekerja HANYA dar
 Tugas: ekstrak fakta subject-predicate-object dari chunk yang diberikan.
 
 SKEMA JSON (wajib):
-{"triples": [{"subject": "<entitas>", "predicate": "<relasi>",
-              "object": "<nilai/entitas>", "source_id": "S1",
+{"triples": [{"subject": "<entitas>", "subject_short_label": "<1-3 kata>",
+              "predicate": "<relasi>", "object": "<nilai/entitas>",
+              "object_short_label": "<1-3 kata>", "source_id": "S1",
               "short_quote": "<kutipan verbatim 5-25 kata dari chunk>",
               "confidence": 0.0-1.0}]}
 
@@ -178,8 +187,11 @@ ATURAN KETAT:
 2. short_quote HARUS potongan verbatim dari teks chunk tersebut.
 3. subject dan object HARUS benar-benar muncul di chunk yang sama.
 4. Jangan memakai pengetahuan luar, jangan mengarang nama/tanggal/jabatan.
-5. Maksimum 12 triple per batch; lebih baik sedikit tapi valid.
-6. Jawab HANYA JSON valid, tanpa code fence/teks lain."""
+5. subject_short_label/object_short_label: 1-3 kata, MAKS 20 karakter,
+   untuk kartu kanvas. Contoh: "Dinas Kesehatan Sleman" -> "Dinkes Sleman".
+   Jangan mengubah entitas penuh; label pendek hanya untuk tampilan.
+6. Maksimum 12 triple per batch; lebih baik sedikit tapi valid.
+7. Jawab HANYA JSON valid, tanpa code fence/teks lain."""
 
 
 def build_extraction_system_prompt(language: str = "id") -> str:
@@ -206,7 +218,9 @@ def build_extraction_prompt(
         lines.append("")
     lines.append(
         "Ekstrak triple yang relevan dengan target/konteks. "
-        "Setiap triple wajib punya source_id + short_quote verbatim. Jawab JSON."
+        "Setiap triple wajib punya source_id + short_quote verbatim + "
+        "subject_short_label/object_short_label (1-3 kata, maks 20 karakter). "
+        "Jawab JSON."
     )
     return "\n".join(lines)
 
@@ -379,13 +393,23 @@ async def extract_triples(
             continue
         for raw in _coerce_triples(data):
             try:
+                subject = str(raw.get("subject") or "").strip()
+                obj = str(raw.get("object") or "").strip()
                 triple = GroundedTriple(
-                    subject=str(raw.get("subject") or "").strip(),
+                    subject=subject,
                     predicate=str(raw.get("predicate") or "").strip(),
-                    object=str(raw.get("object") or "").strip(),
+                    object=obj,
                     source_id=str(raw.get("source_id") or "").strip(),
                     short_quote=str(raw.get("short_quote") or "").strip(),
                     confidence=max(0.0, min(1.0, float(raw.get("confidence") or 0.6))),
+                    subject_short_label=compact_short_label(
+                        str(raw.get("subject_short_label") or ""),
+                        fallback=subject,
+                    ),
+                    object_short_label=compact_short_label(
+                        str(raw.get("object_short_label") or ""),
+                        fallback=obj,
+                    ),
                 )
             except Exception:
                 result.rejected += 1
@@ -446,6 +470,8 @@ def triples_to_facts(triples: Sequence[GroundedTriple]) -> list[Fact]:
                         quote=triple.short_quote,
                     )
                 ],
+                subject_short_label=triple.subject_short_label,
+                object_short_label=triple.object_short_label,
             )
         )
     return facts

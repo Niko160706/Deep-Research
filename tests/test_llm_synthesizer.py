@@ -98,17 +98,17 @@ def test_estimate_tokens_is_chars_over_four() -> None:
     assert syn.estimate_tokens("a" * 400) == 100
 
 
-def test_resolve_provider_auto_prefers_gemini() -> None:
+def test_resolve_provider_auto_prefers_groq() -> None:
     spec = syn.resolve_provider(
         LLMConfig(),
         {"GEMINI_API_KEY": "gk", "OPENROUTER_API_KEY": "ok", "GROQ_API_KEY": "qk"},
     )
     assert spec is not None
-    assert spec.name == "gemini"
-    assert spec.model == "gemini-3.8-flash"
-    assert spec.fallback_model == "gemini-3.7-flash,gemini-3.5-flash"
-    assert spec.api_key == "gk"
-    assert spec.base_url == ""  # Google SDK default
+    assert spec.name == "groq"
+    assert spec.model == "openai/gpt-oss-120b"
+    assert spec.fallback_model == "qwen/qwen3.8-27b"
+    assert spec.api_key == "qk"
+    assert spec.base_url == syn.GROQ_BASE_URL
 
 
 def test_resolve_provider_accepts_google_api_key_alias() -> None:
@@ -118,24 +118,26 @@ def test_resolve_provider_accepts_google_api_key_alias() -> None:
     assert spec.api_key == "alias"
 
 
-def test_resolve_provider_auto_falls_back_to_openrouter_then_groq() -> None:
-    spec = syn.resolve_provider(LLMConfig(), {"OPENROUTER_API_KEY": "ok"})
-    assert spec is not None
-    assert spec.name == "openrouter"
-    assert spec.model == "google/gemini-3.8-flash"
-    assert spec.base_url == syn.OPENROUTER_BASE_URL
-
+def test_resolve_provider_auto_groq_then_gemini() -> None:
     spec = syn.resolve_provider(LLMConfig(), {"GROQ_API_KEY": "qk"})
     assert spec is not None
     assert spec.name == "groq"
-    assert spec.model == "qwen/qwen3.8-27b"
+    assert spec.model == "openai/gpt-oss-120b"
     assert spec.base_url == syn.GROQ_BASE_URL
-    # Groq multi-model fallback (OTPM guard): qwen -> gpt-oss-120b -> llama-3.3.
+    # Groq multi-model fallback: gpt-oss-120b -> qwen3.8-27b.
     assert syn.model_chain(spec) == [
-        "qwen/qwen3.8-27b",
         "openai/gpt-oss-120b",
-        "llama-3.3-70b-versatile",
+        "qwen/qwen3.8-27b",
     ]
+
+    spec = syn.resolve_provider(LLMConfig(), {"GEMINI_API_KEY": "gk"})
+    assert spec is not None
+    assert spec.name == "gemini"
+    assert spec.model == "gemini-3.8-flash"
+
+    # OpenRouter is explicit-only; auto mode must not spend Gemini's quota
+    # after an OpenRouter failure.
+    assert syn.resolve_provider(LLMConfig(), {"OPENROUTER_API_KEY": "ok"}) is None
 
 
 def test_resolve_provider_returns_none_without_any_key() -> None:
@@ -167,18 +169,25 @@ def test_build_client_selects_provider_class() -> None:
     assert oai.name == "openrouter"
 
 
-# ---- provider failover chain (404/503 Gemini -> OpenRouter -> Groq) ---------
+# ---- provider failover chain (Groq primary -> Gemini last) ------------------
 
 def test_resolve_providers_returns_priority_chain() -> None:
     specs = syn.resolve_providers(
         LLMConfig(),
         {"GEMINI_API_KEY": "gk", "OPENROUTER_API_KEY": "ok", "GROQ_API_KEY": "qk"},
     )
-    assert [s.name for s in specs] == ["gemini", "openrouter", "groq"]
+    # Groq primary/secondary models first; Gemini is the last-resort provider.
+    # OpenRouter never enters the auto chain.
+    assert [s.name for s in specs] == ["groq", "gemini"]
+    assert syn.model_chain(specs[0]) == [
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+    ]
 
     specs = syn.resolve_providers(LLMConfig(), {"GROQ_API_KEY": "qk"})
     assert [s.name for s in specs] == ["groq"]
 
+    assert syn.resolve_providers(LLMConfig(), {"OPENROUTER_API_KEY": "ok"}) == []
     assert syn.resolve_providers(LLMConfig(), {}) == []
 
 
@@ -189,6 +198,12 @@ def test_resolve_providers_explicit_provider_is_single_or_empty() -> None:
     assert [s.name for s in specs] == ["groq"]
     assert syn.resolve_providers(cfg, {"GEMINI_API_KEY": "gk"}) == []
 
+    cfg = LLMConfig(provider="openrouter")
+    specs = syn.resolve_providers(
+        cfg, {"GEMINI_API_KEY": "gk", "OPENROUTER_API_KEY": "ok", "GROQ_API_KEY": "qk"}
+    )
+    assert [s.name for s in specs] == ["openrouter"]
+
 
 def test_model_chain_parses_comma_separated_fallbacks() -> None:
     spec = syn.ProviderSpec("gemini", "a", "k", fallback_model="b, c , a, ")
@@ -196,7 +211,7 @@ def test_model_chain_parses_comma_separated_fallbacks() -> None:
     assert syn.model_chain(syn.ProviderSpec("gemini", "", "k", fallback_model="")) == []
 
 
-# ---- Groq multi-model fallback (qwen -> gpt-oss-120b -> llama-3.3) ----------
+# ---- Groq multi-model fallback (gpt-oss-120b -> qwen3.8-27b) ----------------
 
 
 class _FakeCompletions:
@@ -206,7 +221,7 @@ class _FakeCompletions:
     async def create(self, **kwargs):
         model = kwargs["model"]
         self.owner.calls.append(model)
-        if model != "llama-3.3-70b-versatile":
+        if model != "qwen/qwen3.8-27b":
             raise RuntimeError(f"404 model {model} tidak tersedia untuk Groq")
         from types import SimpleNamespace
 
@@ -236,22 +251,21 @@ async def test_openai_compat_client_falls_back_through_groq_models(
 
     spec = syn.ProviderSpec(
         "groq",
-        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
         "qk",
         base_url=syn.GROQ_BASE_URL,
-        fallback_model="openai/gpt-oss-120b,llama-3.3-70b-versatile",
+        fallback_model="qwen/qwen3.8-27b",
     )
     client = syn.OpenAICompatClient(spec, LLMConfig())
     text, meta = await client.generate("sys", "user")
 
     assert text == '{"queries": []}'
-    assert meta["model"] == "llama-3.3-70b-versatile"
+    assert meta["model"] == "qwen/qwen3.8-27b"
     assert meta["used_fallback_model"] is True
     assert meta["total_tokens"] == 7
     assert _FakeAsyncOpenAI.instances[0].calls == [
-        "qwen/qwen3.8-27b",
         "openai/gpt-oss-120b",
-        "llama-3.3-70b-versatile",
+        "qwen/qwen3.8-27b",
     ]
 
 
@@ -313,6 +327,12 @@ async def test_generate_with_failover_throttles_groq_real_clients_only(
     monkeypatch.setattr(syn, "build_client", lambda spec, cfg: _FakeClient(["ok"]))
     text, _meta, _spec = await syn.generate_with_failover([spec], cfg, "sys", "user")
     assert text == "ok"
+    assert throttled == [("groq", 2.0)]
+
+    # Hard floor: even config 0 cannot remove the Groq OTPM guard.
+    throttled.clear()
+    cfg0 = LLMConfig(provider_min_interval_seconds=0)
+    await syn.generate_with_failover([spec], cfg0, "sys", "user")
     assert throttled == [("groq", 2.0)]
 
 
@@ -572,14 +592,14 @@ def test_write_llm_report_writes_markdown_with_provenance(tmp_path: Path) -> Non
 def test_format_llm_report_appends_footer() -> None:
     result = syn.LLMResult(
         provider="groq",
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         markdown="# Laporan [S1]",
         segments_used=1,
         documents_used=1,
     )
     formatted = syn.format_llm_report(result)
     assert formatted.startswith("# Laporan [S1]")
-    assert "groq/llama-3.3-70b-versatile" in formatted
+    assert "groq/openai/gpt-oss-120b" in formatted
 
 
 # ---- report sidecar (structured output) --------------------------------------

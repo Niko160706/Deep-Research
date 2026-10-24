@@ -1686,8 +1686,8 @@ class Orchestrator:
         satu-satunya basis fakta; parquet hanya dipakai untuk mencari chunk /
         kutipan yang mendukung fakta tersebut. Segmen dibatasi
         ``settings.llm.max_segments`` / ~``max_input_tokens``, lalu laporan
-        investigasi final diminta ke provider LLM (Gemini → OpenRouter → Groq)
-        dan disimpan ke ``runs/<run_id>/report_llm.md``.
+        investigasi final diminta ke provider LLM (Groq gpt-oss-120b → Groq
+        qwen3.8-27b → Gemini) dan disimpan ke ``runs/<run_id>/report_llm.md``.
 
         Tidak pernah melempar exception: kegagalan apa pun kembali sebagai
         :class:`LLMResult` dengan ``skipped_reason``/``error``; ``None``

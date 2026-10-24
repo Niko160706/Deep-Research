@@ -1,109 +1,97 @@
-# Product Requirements Document (PRD) - UI/UX Canvas & Mindmap Design
-## Deep Research AI Agent (Hierarchical Mindmap Canvas)
+# Design System & UI/UX Requirements (`PRD_design.md`)
+
+Dokumen ini adalah spesifikasi desain terikat untuk tampilan kanvas web interaktif Knowledge Graph (`src/drx/visualizer/graph_view.py`). Seluruh komponen UI, warna, tipografi, dan tata letak WAJIB mengikuti standar spesifikasi di bawah ini.
 
 ---
 
-## 1. Design Philosophy & Aesthetic (Clean Minimalist Light Theme)
+## 1. Layout Geometry & Hierarchy Strategy
 
-### 1.1 Aesthetic Palette
-- **Style:** Clean, Minimalist Industrial Mindmap (Inspired by Notion Light & Modern Flowcharts).
-- **Background:** Soft Off-White `#F8FAFC` with subtle dot-grid pattern (`#CBD5E1`, spacing: 20px).
-- **Node Cards:** Solid White `#FFFFFF` with subtle border `#E2E8F0` and clean box shadow (`0 4px 6px -1px rgba(0,0,0,0.08)`).
-- **Typography:** Dark Slate `#0F172A` for primary text, Sans-Serif (`Inter`, `system-ui`).
-- **Accent Badges (Minimalist Accent Only):**
-  - Root Input / Prompt: Soft Indigo (`#EEF2FF`, border `#6366F1`, text `#4338CA`).
-  - Kueri / Sub-Kueri: Soft Cyan (`#ECFEFF`, border `#06B6D4`, text `#0E7490`).
-  - Entitas / Individu: Soft Purple (`#F3E8FF`, border `#A855F7`, text `#6B21A8`).
-  - Instansi / Perusahaan: Soft Amber (`#FEF3C7`, border `#F59E0B`, text `#B45309`).
-
----
-
-## 2. Horizontal Hierarchical Mindmap Layout (Left-to-Right)
-
-### 2.1 Vis.js Layout Configuration
-Visualisasi graf WAJIB menggunakan konfigurasi **Hierarchical Layout (Left-to-Right)** agar membentuk alur *mindmap* cabang yang rapi:
-
-```javascript
-const options = {
-  layout: {
-    hierarchical: {
-      enabled: true,
-      direction: 'LR',        // Left to Right (Kiri ke Kanan)
-      sortMethod: 'directed',
-      nodeSpacing: 180,
-      levelSeparation: 350
-    }
-  },
-  physics: {
-    enabled: false            // Matikan simulasi gravitasi agar posisi node stabil
-  },
-  edges: {
-    smooth: {
-      type: 'cubicBezier',    // Garis melengkung halus seperti n8n/mindmap
-      forceDirection: 'horizontal'
-    },
-    color: { color: '#94A3B8', highlight: '#3B82F6' },
-    width: 2
-  }
-};
-```
-
-### 2.2 Explicit Node Levels & Cross-Edges
-- Setiap node membawa atribut `level` eksplisit — bukan hasil inferensi edge:
-  - `0` = root query / target utama (satu kolom paling kiri),
-  - `1` = fakta dari pencarian awal **dan** gelombang Expand,
-  - `N+1` = fakta baru dari pivot pada node level `N` (per cabang).
-- Level bersifat **per cabang dan tanpa batas**: pivot node level 1 → anak
-  level 2, pivot node level 2 → anak level 3, dst. Bukan nomor ronde global.
-- Node yang sudah dikenal mempertahankan level pertama saat ditemukan.
-- Edge mundur (`to_level < from_level`, *cross-edge*) **disembunyikan secara
-  default** agar alur kiri→kanan tetap dominan. Toolbar menyediakan toggle
-  `↔ Cross (N)` untuk menampilkannya; saat tampil, cross-edge memakai garis
-  tipis putus-putus `#CBD5E1`.
-- Kartu node sengaja minimal: label saja (tanpa ikon/tipe di kartu). ID,
-  tipe, level, status verifikasi, derajat, riwayat pivot, dan provenance
-  tersedia di tooltip + inspector sidebar.
-
-### 2.3 Selection Feedback, Tray & Pivot Confirmation
-- Node terpilih: background & border `#3B82F6`, glow ring `#60A5FA`, border
-  tebal (`4px`), teks putih — kontras jelas terhadap kartu putih.
-- **Klik node = toggle select/deselect**; tidak perlu Ctrl/drag. Semua node
-  yang dipilih tetap terlihat dan node lain tidak disembunyikan.
-- **Selection tray** muncul di kiri-atas berisi daftar `ID · label · level`,
-  penanda `sudah dipivot`, counter live, tombol hapus per chip, dan `Clear`.
-- Tombol pivot menampilkan counter live:
-  `⚡ Pivot Selected Nodes (X node terpilih)`.
-- Menekan tombol pivot membuka **modal konfirmasi** berisi daftar node
-  tervalidasi + total. Satu klik `Kirim Pivot` mengirim **satu** POST
-  `/api/pivot` berisi seluruh ID; `Batal` tidak mengirim apa pun.
-- Saran critic juga melewati modal konfirmasi sebelum dikirim.
-- Seleksi dipertahankan saat kanvas di-refresh oleh polling `/api/graph`.
-
-### 2.4 Budget, Expand & Checkpoint
-- Toolbar web dan checkpoint terminal selalu menampilkan:
-  token kumulatif + **sisa token/max**, URL + **sisa URL/max**, waktu +
-  **sisa waktu/max**, estimasi biaya, dan peringatan `over budget`.
-- `Expand Document Pool` menjalankan pencarian baru, bukan membaca ulang
-  parquet: deep-search kueri awal dengan limit lebih besar (hasil di luar
-  top-N lama) + sudut kueri baru (profil/karier/berita/wawancara/...).
-  Seluruh dokumen baru diekstrak sebagai fakta **level 1**, dengan dedup URL.
-- Terminal menyediakan `[4] Lihat semua node per level` (bukan hanya top-5
-  saran), serta konfirmasi `y/n` untuk pivot, expand, dan stop.
-- Mode interaktif tidak auto-stop saat frontier kosong atau novelty stagnan;
-  hanya aksi Stop eksplisit yang mengakhiri. Jika batas token/URL/waktu
-  terlampaui, CLI meminta konfirmasi lanjut; Web App menampilkan status
-  over-budget dan tetap menerima aksi Stop.
+* **Orientasi:** Vertikal / Top-to-Bottom (`direction: 'UD'` / Up-Down).
+* **Root Node (Level 0):** Berada di posisi paling ATAS tengah kanvas.
+* **Level Progression:** Node bertambah ke BAWAH. Cabang-cabang node menyebar secara HORIZONTAL memanfaatkan lebar layar laptop.
+* **Maksimum Kedalaman:** Level 0 hingga Level 5/6.
+* **Spacing Rules (Vis.js Configuration):**
+  * `levelSeparation`: `130px` (Jarak vertikal antartingkat/level).
+  * `nodeSpacing`: `180px` (Jarak horizontal antar-node dalam satu level agar tidak bertumpukan).
+  * `treeSpacing`: `200px` (Jarak antar-cabang utama).
+  * `physics`: `false` (Kalkulasi fisik dimatikan total agar node terkunci rapi di gridnya).
 
 ---
 
-## 3. Final Synthesis Grounding (Anti-Halusinasi)
+## 2. Typography System & Hierarchy
 
-Laporan final (`report_llm.md`) **hanya** boleh membaca:
+Gunakan *font-family* tunggal: `Inter`, `-apple-system`, `BlinkMacSystemFont`, `"Segoe UI"`, `Roboto`, `sans-serif`.
 
-1. fakta Knowledge Graph yang sudah tervalidasi
-   (`subject–predicate–object` + `source_id` + `short_quote`), dan
-2. chunk/kutipan parquet yang menjadi bukti fakta tersebut.
+| Komponen | Font Size | Font Weight | Line Height | Letter Spacing | Color Code |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Header Status / Stats** | `11px` | `400` (Regular) | `1.2` | `0.02em` | `#94A3B8` |
+| **Button Text** | `12px` | `600` (SemiBold) | `1.0` | `0.01em` | `#FFFFFF` |
+| **Node Type Badge** | `9px` | `600` (SemiBold) | `1.0` | `0.05em` | Dynamic Badge Text |
+| **Node Short Title** | `12px` | `500` (Medium) | `1.3` | `0.01em` | `#F8FAFC` |
+| **Inspector Drawer Header** | `15px` | `600` (SemiBold) | `1.3` | `0.00em` | `#F8FAFC` |
+| **Inspector Drawer Body** | `12px` | `400` (Regular) | `1.5` | `0.00em` | `#CBD5E1` |
 
-Chunk parquet mentah yang tidak pernah diekstrak/diverifikasi **tidak boleh**
-dikirim ke prompt sintesis. Bila tidak ada fakta KG yang memiliki bukti teks,
-sintesis dilewati dengan alasan eksplisit (tanpa fallback ke dump parquet).
+---
+
+## 3. Color Palette System (Dark Neon Theme)
+
+### Base & Canvas Colors
+* **Canvas Background:** `#0B0F17` (Dark Slate / Near Black)
+* **Canvas Dot Grid:** `#1E293B` (Ukuran titik 1.5px, jarak antar-titik 20px)
+* **Edge Line Color:** `#334155` (Garis relasi antar-node, tebal 1.5px, style `cubicBezier`)
+* **Edge Line Active:** `#38BDF8` (Garis menyala/glow saat node terikat diklik)
+
+### Node Card Colors
+* **Default Card Background:** `#151C2C` (Dark Glass / Solid Slate)
+* **Default Card Border:** `#334155` (Tekstur border tipis 1px, `border-radius: 8px`)
+* **Selected Card Border:** `#38BDF8` (Biru Neon) + `box-shadow: 0 0 12px rgba(56, 189, 248, 0.35)`
+
+### Badge Category Colors (Semantic Types)
+
+| Tipe Node | Background | Text Color | Border Color |
+| :--- | :--- | :--- | :--- |
+| **INDIVIDU** | `#2E1065` | `#C084FC` | `#581C87` |
+| **INSTANSI / PERUSAHAAN** | `#451A03` | `#FCD34D` | `#78350F` |
+| **AKTOR / THREAT** | `#450A0A` | `#FCA5A5` | `#7F1D1D` |
+| **VERIFIED / BUKTI** | `#022C22` | `#6EE7B7` | `#064E3B` |
+| **KUERI / SARAN** | `#082F49` | `#38BDF8` | `#0369A1` |
+
+---
+
+## 4. Node Component Architecture & Dimensions
+
+* **Dimensi Kartu Node:**
+  * **Width:** Fixed `180px` (Mencegah kartu melebar atau merusak tata letak).
+  * **Padding:** `8px 10px`.
+  * **Height:** Auto (menyesuaikan isi, maks `55px`).
+* **Format Teks Judul Node:**
+  * Wajib berupa `short_label` (Maksimal 1–3 kata / 20 karakter).
+  * Jika teks melebihi 20 karakter, secara otomatis dipotong dengan *ellipsis* (`...`).
+  * Teks panjang/lengkap TIDAK BOLEH ditampilkan di kanvas, melainkan dipindah ke Hover Tooltip & Inspector Drawer.
+
+---
+
+## 5. Interaksi & Floating Controls
+
+### Floating Action Header Bar (Paling Atas Tengah)
+* **Background:** `#0F172A` dengan `backdrop-filter: blur(8px)` dan border `#1E293B`.
+* **Kontras Tombol:**
+  * **Tombol Pivot Selected:** Background `#2563EB` (Solid Blue), Teks `#FFFFFF`.
+  * **Tombol Expand Pool:** Background `#0D9488` (Solid Teal), Teks `#FFFFFF`.
+  * **Tombol Stop & Finalize:** Background `#DC2626` (Solid Red), Teks `#FFFFFF`.
+* **Bug Fix Spacing:** Teks status (token/URL/waktu) ditempatkan di kontainer terpisah di bawah tombol dengan jarak `margin-top: 6px` agar teks tidak menumpuk.
+
+### Hover Tooltip (Arahkan Kursor)
+* **Delay:** `200ms`.
+* **Tampilan:** Box melayang kecil di samping kursor.
+* **Isi:** Judul Lengkap Entitas + Deskripsi Ringkas 1 Kalimat + Jumlah Sumber/Bukti.
+* **Styling Tooltip:** Background `#1E293B`, Border `#475569`, Text `#F8FAFC` (`11px`).
+
+### Inspector Drawer (Klik Node - Slide-in dari Kanan)
+* **Width:** `360px` (Fixed side panel).
+* **Background:** `#0F172A`, Border-left `#1E293B`.
+* **Komponen:**
+  * **Header:** ID Node (`n16`), Nama Lengkap, Badge Tipe, & Confidence Score.
+  * **Section 1:** Bukti Grounding (Kutipan teks asli dari dokumen).
+  * **Section 2:** Daftar Sumber (URL interaktif yang bisa diklik).
+  * **Section 3:** Saran Critic (Alasan kenapa node ini direkomendasikan untuk di-pivot).

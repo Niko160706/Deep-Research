@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from drx.models import Document
 from drx.textutil import (
+    compact_short_label,
     has_all_tokens,
     keyword_query,
     primary_entity,
@@ -15,6 +16,27 @@ from drx.textutil import (
     tokenize,
     top_keywords,
 )
+
+
+def test_compact_short_label_caps_words_and_characters() -> None:
+    assert compact_short_label("Dinas Kesehatan Sleman") == "Dinas Kesehatan..."
+    assert compact_short_label("  Dinkes   Sleman  ") == "Dinkes Sleman"
+    assert compact_short_label("Kementerian Kesehatan Republik Indonesia") == "Kementerian..."
+    assert compact_short_label("Supercalifragilisticexpialidocious") == (
+        "Supercalifragilis..."
+    )
+    assert len(compact_short_label("Supercalifragilisticexpialidocious")) == 20
+    assert compact_short_label("", fallback="Sri Lestari") == "Sri Lestari"
+    assert compact_short_label("", fallback="") == ""
+    for value in (
+        "Dinas Kesehatan Sleman",
+        "Kementerian Kesehatan Republik Indonesia",
+        "Supercalifragilisticexpialidocious",
+        "123456789012345678 9",
+    ):
+        label = compact_short_label(value)
+        assert len(label) <= 20
+        assert 1 <= len(label.split()) <= 3
 
 
 def test_tokenize_filters_stopwords_and_short_words() -> None:

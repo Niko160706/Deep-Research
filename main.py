@@ -1,10 +1,14 @@
 """CLI entrypoint for the Deep Research AI Agent.
 
-Tiga mode:
+Lima jalur eksekusi:
 
+* **Pemilihan modul utama** — pada wizard TTY, prompt pertama memilih
+  **[1] General Investigation** atau **[2] Internship Hunter** sebelum
+  memilih antarmuka CLI/Web App.  Mode 2 adalah modul tambahan di
+  ``src/drx/internship/`` dan tidak mengubah loop investigasi umum.
 * **Interaktif** (default) — ``python main.py`` tanpa argumen membuka wizard
-  singkat: pilihan mode eksekusi → kueri target → konteks tambahan → mode
-  kedalaman investigasi → toggle log verbose.
+  singkat: pilihan modul utama → mode eksekusi → kueri target → konteks
+  tambahan → mode kedalaman investigasi → toggle log verbose.
 * **Checkpoint CLI** — ``python main.py --query "..." --interactive``: setiap
   siklus berhenti di terminal untuk pivot/expand/selesai + kanvas
   ``graph_interactive.html``.
@@ -19,9 +23,10 @@ Tiga mode:
   skrip tetap berjalan lancar.
 
 Setelah Phase 1 (pencarian + pembersihan) selesai dan laporan ekstraktif
-ditampilkan, Phase 2 otomatis berjalan: ``synthesize_llm()`` mengirim segmen
-terpilih dari parquet ke provider LLM (Gemini → OpenRouter → Groq) untuk
-menghasilkan ``runs/<run_id>/report_llm.md`` + ``runs/<run_id>/report_sidecar.json``
+ditampilkan, Phase 2 otomatis berjalan: ``synthesize_llm()`` mengirim fakta KG
+tervalidasi + segmen bukti ke provider LLM (Groq gpt-oss-120b → Groq
+qwen3.8-27b → Gemini) untuk menghasilkan ``runs/<run_id>/report_llm.md``
++ ``runs/<run_id>/report_sidecar.json``
 (``verified_facts`` juga dimasukkan ke ``graph.graphml``), yang juga dicetak ke
 terminal. Sebelum itu, *agentic critic loop* menilai kecukupan bukti dan
 menjalankan sub-kueri gap bila perlu (maks. 2 ronde). Bila tidak ada API key /
@@ -41,6 +46,9 @@ Usage:
     python main.py --query "..." --depth 3           # Deep Dive (min_docs=50, non-strict)
     python main.py --query "..." --no-prompt         # tanpa prompt (CI)
     python main.py --query "..." --no-llm            # lewati sintesis LLM (Phase 2)
+    python main.py --mode internship                 # wizard Internship Hunter
+    python main.py --mode internship --internship-approach role \\
+        --internship-role "AI Engineer" --no-prompt # non-interaktif
 """
 from __future__ import annotations
 
@@ -103,6 +111,29 @@ def _stdin_is_tty() -> bool:
         return bool(sys.stdin and sys.stdin.isatty())
     except Exception:  # pragma: no cover - closed/detached stdin
         return False
+
+
+def _prompt_entry_mode() -> str:
+    """Pilih modul utama sebelum antarmuka CLI/Web App.
+
+    ``general`` mempertahankan seluruh alur investigasi Mode 1.  ``internship``
+    membuka sub-menu Internship Hunter dan tidak menyentuh orchestrator umum.
+    """
+    print()
+    print("=" * 64)
+    print("  PILIH MODUS UTAMA")
+    print("=" * 64)
+    print("  [1] General Investigation (Sistem Lama)")
+    print("      Tracking / investigasi kasus / individu / bisnis")
+    print("  [2] Internship Hunter (Sistem Baru)")
+    print("      Cari tempat magang tech: JobStreet, Glints, Kalibrr, ITS,")
+    print("      MSIB, LinkedIn, NodeFlair")
+    try:
+        raw = input("Modus utama [1/2, default 1]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt, OSError):
+        print()
+        return "general"
+    return "internship" if raw in {"2", "internship", "magang", "intern"} else "general"
 
 
 def _prompt_run_mode() -> str:
@@ -226,6 +257,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="research query; bila kosong -> mode interaktif",
     )
     parser.add_argument(
+        "--mode",
+        choices=["general", "internship"],
+        default=None,
+        help=(
+            "modul utama: general (default, investigasi) atau internship "
+            "(Internship Hunter); tanpa flag ini wizard menanyakan modus"
+        ),
+    )
+    parser.add_argument(
+        "--internship-approach",
+        choices=["role", "discovery", "skill"],
+        default=None,
+        help="strategi Internship Hunter (non-interaktif)",
+    )
+    parser.add_argument(
+        "--internship-role",
+        default="",
+        help='peran target untuk --internship-approach role (mis. "AI Engineer")',
+    )
+    parser.add_argument(
+        "--internship-skills",
+        default="",
+        help='daftar skill dipisah koma untuk --internship-approach skill (mis. "Python, Go, SQL")',
+    )
+    parser.add_argument(
+        "--internship-location",
+        default="Indonesia OR Remote",
+        help='lokasi/moda pencarian internship (default: "Indonesia OR Remote")',
+    )
+    parser.add_argument(
+        "--internship-work-mode",
+        default="",
+        help="filter mode kerja internship: Remote / Hybrid / On-site",
+    )
+    parser.add_argument(
+        "--max-internships",
+        type=int,
+        default=30,
+        help="jumlah maksimum lowongan valid yang disimpan (default: 30)",
+    )
+    parser.add_argument(
         "--config", default="config/settings.yaml", help="path to settings.yaml"
     )
     parser.add_argument("--run-id", default=None, help="override the run id")
@@ -257,7 +329,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-prompt",
         action="store_true",
-        help="jangan tampilkan prompt apa pun (wajib dipakai bersama --query)",
+        help=(
+            "jangan tampilkan prompt apa pun (wajib bersama --query untuk mode "
+            "general; mode internship memakai flag --internship-*)"
+        ),
     )
     parser.add_argument(
         "--no-llm",
@@ -405,6 +480,140 @@ def prompt_save_run(run_dir: Path, *, interactive: bool = True) -> bool:
     return False
 
 
+# ---- Internship Hunter entry ------------------------------------------------
+
+def _internship_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        args.mode == "internship"
+        or args.internship_approach
+        or args.internship_role
+        or args.internship_skills
+    )
+
+
+def _internship_options_from_args(args: argparse.Namespace):
+    """Resolve explicit CLI flags without prompting."""
+    from drx.internship.wizard import InternshipWizardResult
+
+    skills = [
+        part.strip()
+        for part in str(args.internship_skills or "").replace(";", ",").split(",")
+        if part.strip()
+    ]
+    role = str(args.internship_role or "").strip()
+    # Convenience: `--mode internship --query "AI Engineer"` behaves like
+    # role-specific mode instead of silently ignoring --query.
+    if not role and not skills and args.query:
+        role = str(args.query).strip()
+    approach = args.internship_approach
+    if approach is None:
+        if skills:
+            approach = "skill"
+        elif role:
+            approach = "role"
+        else:
+            approach = "discovery"
+    if approach not in {"role", "discovery", "skill"}:
+        approach = "discovery"
+    return InternshipWizardResult(
+        approach=approach,  # type: ignore[arg-type]
+        role=role,
+        skills=skills,
+        location=args.internship_location or "Indonesia OR Remote",
+        work_mode=args.internship_work_mode or "",
+    )
+
+
+async def _run_internship_mode(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    interactive_terminal: bool,
+) -> int:
+    """Run the additive Internship Hunter path (Mode 1 untouched)."""
+    from drx.internship.engine import run_internship
+    from drx.internship.wizard import prompt_internship_setup
+
+    # Interface choice comes after the top-level mode choice (see amain), and
+    # before the internship sub-menu.
+    interface = "web" if args.web else "cli"
+    if (
+        not args.web
+        and interactive_terminal
+        and (args.query is None or args.interactive)
+    ):
+        interface = _prompt_run_mode()
+
+    explicit = bool(
+        args.internship_approach
+        or args.internship_role
+        or args.internship_skills
+        or args.query
+    )
+    if (
+        args.query is None
+        and interactive_terminal
+        and not args.no_prompt
+        and not explicit
+    ):
+        setup = prompt_internship_setup(
+            ask=_ask,
+            default_location=args.internship_location or "Indonesia OR Remote",
+        )
+    else:
+        setup = _internship_options_from_args(args)
+
+    if args.no_llm:
+        settings.llm.enabled = False
+    if args.llm_model:
+        settings.llm.model = args.llm_model
+    if args.mock_search:
+        settings.search.backend = "mock"
+    setup_logging(args.verbose)
+
+    print("-" * 64)
+    print("Konfigurasi Internship Hunter:")
+    print(f"  Pendekatan    : {setup.approach}")
+    if setup.role:
+        print(f"  Role          : {setup.role}")
+    if setup.skills:
+        print(f"  Skills        : {', '.join(setup.skills)}")
+    print(f"  Lokasi/moda   : {setup.location}")
+    print(f"  Mode kerja    : {setup.work_mode or '(semua)'}")
+    print(f"  LLM           : {'nonaktif (--no-llm)' if args.no_llm else _llm_provider_note(settings)}")
+    print("  Sumber        : JobStreet, Glints, Kalibrr, ITS, MSIB, LinkedIn, NodeFlair")
+    print("-" * 64)
+
+    result = await run_internship(
+        settings,
+        approach=setup.approach,
+        role=setup.role,
+        skills=setup.skills,
+        location=setup.location,
+        work_mode=setup.work_mode,
+        max_jobs=args.max_internships,
+        run_id=args.run_id,
+        no_llm=args.no_llm,
+        mock=args.mock_search,
+        verbose=True,
+    )
+    print(result.terminal_summary)
+
+    if interface == "web" and result.graph_path is not None:
+        uri = result.graph_path.resolve().as_uri()
+        print(f"\nWeb App (mindmap statis): {uri}")
+        if not args.no_prompt:
+            try:
+                import webbrowser
+
+                webbrowser.open(uri)
+            except Exception:
+                pass
+
+    prompt_save_run(result.run_dir, interactive=not args.no_prompt)
+    return 0
+
+
 # ---- entrypoint ------------------------------------------------------------
 
 async def amain(args: argparse.Namespace) -> int:
@@ -412,10 +621,30 @@ async def amain(args: argparse.Namespace) -> int:
     if args.region:
         settings.search.region = args.region
 
+    # ---- Top-level module selection (General vs Internship Hunter) ----------
+    # This is intentionally asked BEFORE the CLI/Web App interface choice.
+    # For backward compatibility, a plain `--query ... --interactive` remains
+    # Mode 1 without an extra prompt; `--mode internship` is the explicit
+    # non-interactive switch for the new module.
+    interactive_terminal = not args.no_prompt and _stdin_is_tty()
+    entry_mode = args.mode or ("internship" if _internship_requested(args) else "general")
+    if (
+        args.mode is None
+        and args.query is None
+        and interactive_terminal
+        and not _internship_requested(args)
+    ):
+        entry_mode = _prompt_entry_mode()
+    if entry_mode == "internship":
+        return await _run_internship_mode(
+            args,
+            settings,
+            interactive_terminal=interactive_terminal,
+        )
+
     # ---- Dual-mode selection (CLI vs Web App) — di awal eksekusi ------------
     # Web App eksplisit (--web) tidak perlu prompt; selebihnya mode ditanyakan
     # hanya pada TTY + bukan --no-prompt (wizard atau --interactive).
-    interactive_terminal = not args.no_prompt and _stdin_is_tty()
     mode = "web" if args.web else "cli"
     if (
         not args.web
@@ -563,12 +792,38 @@ async def amain(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.no_prompt and not args.query:
+    internship_cli = _internship_requested(args)
+    if args.no_prompt and not args.query and not internship_cli:
         print(
-            "Error: --no-prompt memerlukan --query (mode non-interaktif).",
+            "Error: --no-prompt memerlukan --query (mode general) atau "
+            "flag --mode internship.",
             file=sys.stderr,
         )
         return 2
+    if args.no_prompt and internship_cli:
+        approach = args.internship_approach
+        if approach is None:
+            approach = (
+                "skill"
+                if args.internship_skills
+                else "role"
+                if (args.internship_role or args.query)
+                else "discovery"
+            )
+        if approach == "role" and not (args.internship_role or args.query):
+            print(
+                "Error: --internship-approach role memerlukan "
+                "--internship-role (atau --query) pada mode --no-prompt.",
+                file=sys.stderr,
+            )
+            return 2
+        if approach == "skill" and not args.internship_skills:
+            print(
+                "Error: --internship-approach skill memerlukan "
+                "--internship-skills pada mode --no-prompt.",
+                file=sys.stderr,
+            )
+            return 2
     try:
         return asyncio.run(amain(args))
     except _Abort:

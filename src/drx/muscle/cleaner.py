@@ -24,6 +24,11 @@ from drx.textutil import (
 
 log = logging.getLogger("drx.muscle.cleaner")
 
+# Minimum Fellegi-Sunter score for a person-name document. Lowered from 0.50
+# to 0.35 to retain relevant news/forum coverage (ArsTechnica, Reddit, NYTimes)
+# that often misses one context/name signal. Strong lookalikes still score <=0.1.
+ENTITY_LIKELIHOOD_MIN = 0.35
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t]+")
 _NL_RE = re.compile(r"\n{3,}")
@@ -365,7 +370,8 @@ class Cleaner:
         """Return documents that survive de-boilerplate + length + lang + entity.
 
         For person-name queries, a document is kept when its Fellegi-Sunter
-        score reaches 0.5 (full-name match); the anchored context (+0.3) and
+        score reaches ``ENTITY_LIKELIHOOD_MIN`` (0.35; loosened from 0.50 to
+        retain relevant news/forum coverage). The anchored context (+0.3) and
         exploratory entities (+0.2) boost the score. When ``context`` is given
         and ``require_context`` is on, a context keyword is **mandatory** for
         ordinary pages — common names ("Sri Lestari", "Ahmad Zaki") otherwise
@@ -466,12 +472,22 @@ class Cleaner:
                 score, matched = self._best_entity_score(
                     probe, entities, context, doc.url, text
                 )
-                if score < 0.5:
+                if score < ENTITY_LIKELIHOOD_MIN:
                     log.debug(
-                        "skip %s: entity likelihood %.2f < 0.5 (entity=%r)",
+                        "skip %s: entity likelihood %.2f < %.2f (entity=%r)",
                         doc.url,
                         score,
+                        ENTITY_LIKELIHOOD_MIN,
                         entity,
+                    )
+                    continue
+                # The lower 0.35 floor must not let a known homonym through:
+                # negative evidence (2-word name glued to another name) still
+                # vetoes the document even when a profile bonus lifts it to 0.4.
+                if matched and third_name_word_penalty(text, matched, context) < 0:
+                    log.debug(
+                        "skip %s: homonym guard (name glued to another name)",
+                        doc.url,
                     )
                     continue
                 if identity and not profile and not social_identity:

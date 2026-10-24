@@ -34,6 +34,20 @@ def test_settings_reads_tavily_key_from_env(tmp_path, monkeypatch) -> None:
     assert settings.tavily_api_key == "tvly-env-key"
 
 
+def test_settings_yaml_llm_hierarchy() -> None:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "config" / "settings.yaml"
+    settings = Settings.load(path)
+    assert settings.llm.provider == "auto"
+    assert settings.llm.groq_model == "openai/gpt-oss-120b"
+    assert settings.llm.groq_fallback_model == "qwen/qwen3.8-27b"
+    assert settings.llm.model == "gemini-3.8-flash"  # tertiary / last
+    assert settings.llm.extraction_max_output_tokens == 400
+    assert settings.llm.critic_max_output_tokens == 400
+    assert settings.llm.provider_min_interval_seconds == 2.0
+
+
 def test_llm_config_defaults() -> None:
     settings = Settings()
     assert settings.llm.enabled is True
@@ -41,11 +55,8 @@ def test_llm_config_defaults() -> None:
     assert settings.llm.model == "gemini-3.8-flash"
     assert settings.llm.fallback_model == "gemini-3.7-flash,gemini-3.5-flash"
     assert settings.llm.openrouter_model == "google/gemini-3.8-flash"
-    assert settings.llm.groq_model == "qwen/qwen3.8-27b"
-    assert (
-        settings.llm.groq_fallback_model
-        == "openai/gpt-oss-120b,llama-3.3-70b-versatile"
-    )
+    assert settings.llm.groq_model == "openai/gpt-oss-120b"
+    assert settings.llm.groq_fallback_model == "qwen/qwen3.8-27b"
     assert settings.llm.provider_min_interval_seconds == 2.0  # Groq OTPM guard
     assert settings.llm.thinking_level == "low"
     assert settings.llm.max_segments == 18

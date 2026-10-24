@@ -27,7 +27,7 @@ import unicodedata
 from pathlib import Path
 
 from drx.models import Fact
-from drx.textutil import name_tokens, tokenize
+from drx.textutil import compact_short_label, name_tokens, tokenize
 
 log = logging.getLogger("drx.store.graph")
 
@@ -186,36 +186,67 @@ class GraphStore:
             return best_id
         return None
 
-    def _resolve(self, name: str, level: int = 1) -> tuple[str, bool]:
+    @staticmethod
+    def _apply_short_label(
+        attrs: dict,
+        full_label: str,
+        provided: str = "",
+    ) -> None:
+        """Store a display-only short label without touching the full label.
+
+        An explicit LLM label wins over a previous deterministic fallback, but
+        a later fallback never overwrites a custom label already present.
+        """
+        default = compact_short_label(full_label)
+        current = compact_short_label(str(attrs.get("short_label") or ""))
+        candidate = compact_short_label(provided) if provided else ""
+        if candidate and (not current or current == default):
+            attrs["short_label"] = candidate
+        elif not current:
+            attrs["short_label"] = default
+
+    def _resolve(
+        self,
+        name: str,
+        level: int = 1,
+        short_label: str = "",
+    ) -> tuple[str, bool]:
         """Return ``(node_id, created)`` for a display name.
 
         ``level`` is the exploration hop recorded on *new* nodes only:
         ``0`` root query, ``1`` initial search, ``2`` pivot round 1,
         ``3+`` subsequent pivot rounds (used by the hierarchical canvas).
         Existing nodes keep the level they were first discovered at.
+
+        ``short_label`` is display-only (1-3 words, max 20 chars) and never
+        affects normalized keys, fuzzy resolution, or hierarchy levels.
         """
         assert self.graph is not None
         clean = _WS_RE.sub(" ", (name or "").strip()) or "(tanpa nama)"
         matched = self._match_existing(clean)
         if matched is not None:
+            self._apply_short_label(
+                self.graph.nodes[matched], self.label_of(matched), short_label
+            )
             return matched, False
         node_id = self._new_node_id()
         key = normalize_name(clean)
         self._register_key(key, node_id)
-        self.graph.add_node(
-            node_id,
-            label=clean,
-            normalized=key,
-            type=infer_node_type(clean),
-            aliases=[],
-            sources=[],
-            quotes=[],
-            confidence=0.0,
-            source_count=0,
-            verified=False,
-            level=max(0, int(level)),
-            created_at=time.time(),
-        )
+        attrs = {
+            "label": clean,
+            "normalized": key,
+            "type": infer_node_type(clean),
+            "aliases": [],
+            "sources": [],
+            "quotes": [],
+            "confidence": 0.0,
+            "source_count": 0,
+            "verified": False,
+            "level": max(0, int(level)),
+            "created_at": time.time(),
+        }
+        self._apply_short_label(attrs, clean, short_label)
+        self.graph.add_node(node_id, **attrs)
         self._known_nodes.add(node_id)
         return node_id, True
 
@@ -223,7 +254,7 @@ class GraphStore:
         """Create/find the root query node and pin it to ``level=0``.
 
         Called once during ``_setup`` so the hierarchical mindmap always has a
-        single left-most anchor even before the first fact mentions the target.
+        single top anchor even before the first fact mentions the target.
         """
         if self.graph is None:
             return None
@@ -231,8 +262,10 @@ class GraphStore:
         if not clean:
             return None
         node_id, _created = self._resolve(clean, level=0)
-        self.graph.nodes[node_id]["level"] = 0
-        self.graph.nodes[node_id]["root"] = True
+        attrs = self.graph.nodes[node_id]
+        attrs["level"] = 0
+        attrs["root"] = True
+        self._apply_short_label(attrs, self.label_of(node_id))
         return node_id
 
     @staticmethod
@@ -316,8 +349,16 @@ class GraphStore:
             return 0
         new_nodes = 0
         for fact in facts:
-            subject_id, created_s = self._resolve(fact.subject, level=level)
-            object_id, created_o = self._resolve(fact.object, level=level)
+            subject_id, created_s = self._resolve(
+                fact.subject,
+                level=level,
+                short_label=getattr(fact, "subject_short_label", ""),
+            )
+            object_id, created_o = self._resolve(
+                fact.object,
+                level=level,
+                short_label=getattr(fact, "object_short_label", ""),
+            )
             new_nodes += int(created_s) + int(created_o)
             for node_id in (subject_id, object_id):
                 self._merge_provenance(self.graph.nodes[node_id], fact)
@@ -362,6 +403,24 @@ class GraphStore:
             )
         return out
 
+    @staticmethod
+    def _node_summary(
+        label: str,
+        quotes: list[str],
+        source_count: int,
+        node_type: str,
+    ) -> str:
+        """One-sentence hover summary derived from grounded evidence."""
+        if quotes:
+            first = _WS_RE.sub(" ", str(quotes[0] or "")).strip()
+            if first:
+                sentence = re.split(r"(?<=[.!?])\s+", first, maxsplit=1)[0]
+                return sentence[:180].rstrip()
+        return (
+            f"{label} - entitas {node_type} dengan "
+            f"{source_count} sumber independen."
+        )
+
     def node_records(self, limit: int = 0) -> list[dict]:
         """Canvas payload: one record per node (provenance included)."""
         if not self.graph:
@@ -371,20 +430,38 @@ class GraphStore:
         if limit and limit > 0:
             nodes = nodes[:limit]
         for node_id, attrs in nodes:
+            label = str(attrs.get("label") or node_id)
+            node_type = str(attrs.get("type") or "lainnya")
+            quotes = [str(q) for q in (attrs.get("quotes") or [])][:3]
+            source_count = int(attrs.get("source_count") or 0)
             records.append(
                 {
                     "id": node_id,
-                    "label": str(attrs.get("label") or node_id),
-                    "type": str(attrs.get("type") or "lainnya"),
+                    "label": label,
+                    # Display-only: 1-3 words / max 20 chars. Full label stays
+                    # intact for tooltips, inspector, export, and critic logic.
+                    "short_label": compact_short_label(
+                        str(attrs.get("short_label") or ""),
+                        fallback=label,
+                    ),
+                    "summary": self._node_summary(
+                        label, quotes, source_count, node_type
+                    ),
+                    "type": node_type,
                     "aliases": list(attrs.get("aliases") or []),
                     "sources": list(attrs.get("sources") or []),
-                    "quotes": list(attrs.get("quotes") or [])[:3],
-                    "source_count": int(attrs.get("source_count") or 0),
+                    "quotes": quotes,
+                    # Backward-compatible grounding alias: visualization and
+                    # external consumers may use either key.
+                    "grounding": list(quotes),
+                    "critic_reason": str(attrs.get("critic_reason") or ""),
+                    "source_count": source_count,
                     "verified": bool(attrs.get("verified")),
                     "confidence": float(attrs.get("confidence") or 0.0),
                     "degree": int(self.graph.degree(node_id)),
                     "level": max(0, int(attrs.get("level", 1))),
                     "root": bool(attrs.get("root")),
+                    "created_at": float(attrs.get("created_at") or 0.0),
                 }
             )
         return records

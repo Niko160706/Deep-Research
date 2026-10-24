@@ -102,13 +102,21 @@ class SourceRef(BaseModel):
 
 
 class Fact(BaseModel):
-    """Entity-track extraction: subject-predicate-object triple."""
+    """Entity-track extraction: subject-predicate-object triple.
+
+    ``subject_short_label`` / ``object_short_label`` are optional display-only
+    labels (1-3 words, max 20 chars) produced by the extractor. They never
+    participate in grounding or entity resolution and can be empty for
+    deterministic / legacy facts.
+    """
 
     subject: str
     predicate: str
     object: str
     confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
     provenance: list[SourceRef] = Field(default_factory=list)
+    subject_short_label: str = ""
+    object_short_label: str = ""
 
 
 class EvidenceCard(BaseModel):

@@ -520,6 +520,10 @@ class SearXNGBackend(AbstractSearchBackend):
 
     Requires the SearXNG Docker service (``docker-compose.yml``). Region lock is
     applied via SearXNG's ``language`` parameter.
+
+    Circuit breaker: a connection failure, timeout, or 5xx response disables
+    this provider for the rest of the run. Otherwise every query (including
+    pivot/expand waves) would wait for the same dead local service.
     """
 
     name = "searxng"
@@ -536,8 +540,32 @@ class SearXNGBackend(AbstractSearchBackend):
         ).rstrip("/")
         self.timeout = timeout
         self.region = region
+        self._disabled = False
+        self._disabled_reason = ""
+
+    @property
+    def disabled(self) -> bool:
+        """True setelah SearXNG gagal dan dimatikan untuk sesi ini."""
+        return self._disabled
+
+    @property
+    def disabled_reason(self) -> str:
+        return self._disabled_reason
+
+    def _disable(self, reason: str) -> None:
+        """Matikan provider sekali saja agar tidak retry di setiap query."""
+        if self._disabled:
+            return
+        self._disabled = True
+        self._disabled_reason = reason
+        log.warning(
+            "SearXNG tidak tersedia (%s) -> dinonaktifkan untuk sesi ini",
+            reason,
+        )
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        if self._disabled:
+            return []
         language = region_to_language(self.region)
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         results: list[SearchResult] = []
@@ -558,7 +586,12 @@ class SearXNGBackend(AbstractSearchBackend):
                         f"{self.base_url}/search", params=params
                     ) as resp:
                         if resp.status != 200:
-                            log.warning("SearXNG returned HTTP %s", resp.status)
+                            if resp.status >= 500:
+                                self._disable(f"HTTP {resp.status}")
+                            else:
+                                log.warning(
+                                    "SearXNG returned HTTP %s", resp.status
+                                )
                             break
                         data = await resp.json()
                     page = self._parse(data, limit - len(results))
@@ -567,8 +600,10 @@ class SearXNGBackend(AbstractSearchBackend):
                     results.extend(page)
                     pageno += 1
         except Exception as exc:
-            log.warning("SearXNG request failed: %s", exc)
-            return []
+            # Connection refused / DNS / timeout / malformed JSON: the local
+            # service is unusable for this run.
+            self._disable(f"{type(exc).__name__}: {exc}")
+            return results[:limit]
         return results[:limit]
 
     @staticmethod
@@ -690,10 +725,18 @@ class HybridSearchBackend(AbstractSearchBackend):
         self.region = region
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        """Fan out to all sources; boolean syntax is stripped for semantic ones."""
+        """Fan out to all active sources; boolean syntax is stripped for semantic ones."""
+        active = [
+            backend
+            for backend in self.backends
+            if not getattr(backend, "disabled", False)
+        ]
+        if not active:
+            log.info("hybrid: semua backend dinonaktifkan -> tidak ada hasil")
+            return []
         shaped = [
             (backend, query if getattr(backend, "supports_boolean", False) else strip_boolean(query))
-            for backend in self.backends
+            for backend in active
         ]
         outcomes = await asyncio.gather(
             *(backend.search(q, limit) for backend, q in shaped),
@@ -712,7 +755,7 @@ class HybridSearchBackend(AbstractSearchBackend):
             "hybrid: %d raw -> %d unique URLs across %d sources",
             len(merged),
             len(deduped),
-            len(self.backends),
+            len(active),
         )
         return deduped[:limit]
 
@@ -736,7 +779,7 @@ class FailoverSearchBackend(AbstractSearchBackend):
 
     async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         for backend in self.backends:
-            if backend.name in self._down:
+            if backend.name in self._down or getattr(backend, "disabled", False):
                 continue
             results = await backend.search(query, limit)
             if results:

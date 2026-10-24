@@ -52,8 +52,10 @@ def _valid_payload() -> dict:
         "triples": [
             {
                 "subject": "Sri Lestari",
+                "subject_short_label": "Sri Lestari",
                 "predicate": "bekerja_sebagai",
                 "object": "perawat",
+                "object_short_label": "Perawat",
                 "source_id": "S1",
                 "short_quote": "bekerja sebagai perawat",
                 "confidence": 0.8,
@@ -74,9 +76,26 @@ async def test_extract_triples_keeps_grounded_triple() -> None:
     assert triple.source_id == "S1"
     assert triple.source_url == URL
     assert triple.short_quote == "bekerja sebagai perawat"
+    assert triple.subject_short_label == "Sri Lestari"
+    assert triple.object_short_label == "Perawat"
+    assert "subject_short_label" in client.calls[0][0]
     assert result.rejected == 0
     assert result.documents == 1
     assert result.batches == 1
+
+
+@pytest.mark.asyncio
+async def test_extract_triples_falls_back_when_short_labels_missing() -> None:
+    payload = _valid_payload()
+    payload["triples"][0].pop("subject_short_label")
+    payload["triples"][0].pop("object_short_label")
+    result = await extractors.extract_triples(
+        [DOC], "Sri Lestari", client=_FakeClient([payload])
+    )
+
+    assert len(result.triples) == 1
+    assert result.triples[0].subject_short_label == "Sri Lestari"
+    assert result.triples[0].object_short_label == "perawat"
 
 
 @pytest.mark.asyncio
@@ -189,12 +208,16 @@ def test_triples_to_facts_carries_provenance() -> None:
         short_quote="bekerja sebagai perawat",
         source_url=URL,
         confidence=0.8,
+        subject_short_label="Sri Lestari",
+        object_short_label="Perawat",
     )
     facts = extractors.triples_to_facts([triple])
 
     assert len(facts) == 1
     fact = facts[0]
     assert fact.subject == "Sri Lestari"
+    assert fact.subject_short_label == "Sri Lestari"
+    assert fact.object_short_label == "Perawat"
     assert fact.confidence_score == pytest.approx(0.8)
     assert fact.provenance[0].url == URL
     assert fact.provenance[0].source_id == "S1"

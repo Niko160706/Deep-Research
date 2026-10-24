@@ -101,23 +101,23 @@ class SynthesisConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """Phase 2 — LLM report synthesis (Google AI Studio / OpenRouter / Groq).
+    """Phase 2 — grounded extraction, critic, and report synthesis.
 
-    Provider utama adalah Google AI Studio (``google-genai``); bila tidak ada
-    ``GEMINI_API_KEY``, klien OpenAI-compatible dipakai untuk OpenRouter/Groq.
+    Hierarki default (``provider="auto"``): **Groq GPT-OSS 120B → Groq Qwen
+    → Gemini**. Gemini diletakkan terakhir karena kuota hariannya kecil
+    (20 request/hari); OpenRouter hanya dipakai bila dipilih eksplisit.
     """
 
     enabled: bool = True
-    provider: str = "auto"  # auto | gemini | openrouter | groq
-    # Gemini: model utama + rantai fallback (dipisah koma; dicoba berurutan).
+    # auto: Groq (gpt-oss-120b -> qwen3.8-27b) -> Gemini.
+    provider: str = "auto"  # auto | groq | gemini | openrouter
+    # Gemini: cadangan terakhir (model + rantai fallback, dipisah koma).
     model: str = "gemini-3.8-flash"
     fallback_model: str = "gemini-3.7-flash,gemini-3.5-flash"
     openrouter_model: str = "google/gemini-3.8-flash"
-    groq_model: str = "qwen/qwen3.8-27b"
-    # Groq: rantai model fallback (dipisah koma; dicoba berurutan per request).
-    groq_fallback_model: str = (
-        "openai/gpt-oss-120b,llama-3.3-70b-versatile"
-    )
+    # Groq: PRIMARY gpt-oss-120b, lalu SECONDARY qwen3.8-27b.
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_fallback_model: str = "qwen/qwen3.8-27b"
     # Jeda minimum antar request provider (detik) — Groq free tier OTPM 1000.
     provider_min_interval_seconds: float = 2.0
     temperature: float = 0.25

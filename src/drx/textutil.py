@@ -25,6 +25,48 @@ _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _APOSTROPHE_RE = re.compile(r"['’`´]")
 _WORD_SEP_RE = re.compile(r"[-_/]+")
 
+#: Canvas cards use a deterministic compact label: 1-3 words, max 20 chars.
+SHORT_LABEL_MAX_CHARS = 20
+SHORT_LABEL_MAX_WORDS = 3
+
+
+def compact_short_label(
+    value: str,
+    *,
+    fallback: str = "",
+    max_words: int = SHORT_LABEL_MAX_WORDS,
+    max_chars: int = SHORT_LABEL_MAX_CHARS,
+) -> str:
+    """Return a display-safe 1-3 word label capped at 20 characters.
+
+    The LLM is asked for ``short_label``, but this helper is also the
+    deterministic fallback for imported/legacy nodes and ``--no-llm`` runs.
+    Long candidates are cut at ``max_chars - 3`` and suffixed with ``...`` so
+    the fixed-width Vis.js card can never overflow.
+    """
+    text = " ".join(str(value or "").split()).strip(
+        " \t\r\n\"'“”‘’.,;:!?()[]{}"
+    )
+    if not text:
+        text = " ".join(str(fallback or "").split()).strip(
+            " \t\r\n\"'“”‘’.,;:!?()[]{}"
+        )
+    if not text:
+        return ""
+    words = text.split()[: max(1, int(max_words))]
+    candidate = " ".join(words)
+    limit = max(4, int(max_chars))
+    if len(candidate) <= limit:
+        return candidate
+    # Prefer a clean word boundary ("Dinas Kesehatan..." rather than
+    # "Dinas Kesehatan S...") while still keeping the 20-char hard cap.
+    clipped = candidate[:limit]
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0]
+    if len(clipped) + 3 > limit:
+        clipped = candidate[: limit - 3]
+    return clipped.rstrip() + "..."
+
 
 def _fold_variants(text: str) -> str:
     """Lowercase + fold apostrophes and hyphen/underscore separators.

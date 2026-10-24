@@ -93,3 +93,86 @@ async def test_hybrid_merges_and_dedupes() -> None:
 async def test_hybrid_returns_empty_when_all_empty() -> None:
     hybrid = HybridSearchBackend(backends=[_FakeBackend([]), _FakeBackend([])])
     assert await hybrid.search("q", limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_searxng_disables_itself_after_connection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drx.muscle import backends as backend_module
+
+    attempts = 0
+
+    def _boom(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(backend_module.aiohttp, "ClientSession", _boom)
+    backend = SearXNGBackend(base_url="http://127.0.0.1:8080", timeout=0.1)
+
+    assert await backend.search("first") == []
+    assert backend.disabled is True
+    assert "connection refused" in backend.disabled_reason
+
+    # No second connection attempt: the provider stays off for this session.
+    assert await backend.search("second") == []
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_searxng_disables_itself_after_5xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drx.muscle import backends as backend_module
+
+    class _Response:
+        status = 503
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    class _Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            return _Response()
+
+    monkeypatch.setattr(backend_module.aiohttp, "ClientSession", _Session)
+    backend = SearXNGBackend(base_url="http://127.0.0.1:8080", timeout=0.1)
+    assert await backend.search("query") == []
+    assert backend.disabled is True
+    assert "503" in backend.disabled_reason
+
+
+@pytest.mark.asyncio
+async def test_hybrid_skips_a_disabled_searxng_backend() -> None:
+    class _DisabledBackend:
+        name = "searxng"
+        disabled = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+            self.calls += 1
+            return []
+
+    disabled = _DisabledBackend()
+    live = _FakeBackend(
+        [SearchResult(url="https://example.com/a", title="A", snippet="A")]
+    )
+    hybrid = HybridSearchBackend(backends=[disabled, live])
+    out = await hybrid.search("q", limit=10)
+    assert [r.url for r in out] == ["https://example.com/a"]
+    assert disabled.calls == 0

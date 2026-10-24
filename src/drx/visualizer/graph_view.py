@@ -1,33 +1,27 @@
-"""PyVis/vis.js renderer — strict compliance with ``PRD_design_new.md``.
+"""PyVis/vis.js renderer — strict compliance with ``PRD_design.md``.
 
-Clean Minimalist Light Theme (inspired by Notion Light & modern flowcharts):
+Dark Neon Theme:
 
-* Canvas background ``#F8FAFC`` (soft off-white) with a subtle ``#CBD5E1``
-  dot-grid at 20 px spacing.
-* Node cards solid white ``#FFFFFF`` with border ``#E2E8F0`` and a clean
-  box-shadow (``0 4px 6px -1px rgba(0,0,0,0.08)``); primary text dark slate
-  ``#0F172A`` (``Inter`` / system-ui).
-* Accent badges (minimalist accent only): root input/prompt indigo
-  ``#EEF2FF``/``#6366F1``/``#4338CA``; kueri/sub-kueri cyan
-  ``#ECFEFF``/``#06B6D4``/``#0E7490``; entitas/individu purple
-  ``#F3E8FF``/``#A855F7``/``#6B21A8``; instansi & perusahaan amber
-  ``#FEF3C7``/``#F59E0B``/``#B45309``. Dokumen/peristiwa/lainnya memakai
-  tint tipis dari semantic color lama supaya tetap konsisten.
+* Canvas background ``#0B0F17`` with a ``#1E293B`` dot-grid at 20 px spacing.
+* Fixed-width 180 px node cards (``#151C2C``, 1 px ``#334155`` border,
+  8 px radius). The visible title is ``short_label`` only (1-3 words, max
+  20 chars); the full ``label`` lives in the hover tooltip + inspector drawer.
+* Badge colors: INDIVIDU ``#C084FC``, INSTANSI ``#FCD34D``, AKTOR ``#FCA5A5``,
+  VERIFIED ``#6EE7B7``, KUERI ``#38BDF8``.
 
-Layout wajib: **Hierarchical Left-to-Right** (``direction: 'LR'``,
-``sortMethod: 'directed'``, ``nodeSpacing: 180``, ``levelSeparation: 350``,
-physics off) dengan edge ``cubicBezier`` + ``forceDirection: 'horizontal'``
-sehingga terbentuk mindmap cabang kiri-ke-kanan. Setiap node membawa atribut
-``level`` eksplisit per cabang (0 root, 1 pencarian awal/Expand, lalu
-``parent.level + 1`` untuk setiap pivot, tanpa batas level). Cross-edge
-(relasi mundur ke level lebih awal) disembunyikan by default dan bisa
-ditampilkan lewat toggle toolbar; alur utama kiri->kanan tetap dominan.
+Layout wajib: **Hierarchical Top-to-Bottom** (``direction: 'UD'``,
+``sortMethod: 'directed'``, ``levelSeparation: 130``, ``nodeSpacing: 180``,
+``treeSpacing: 200``, physics off) dengan edge ``cubicBezier``. Setiap node
+membawa atribut ``level`` eksplisit per cabang (0 root, 1 pencarian
+awal/Expand, lalu ``parent.level + 1`` untuk setiap pivot, tanpa batas level).
+Cross-edge (relasi mundur ke level lebih awal) disembunyikan by default dan
+bisa ditampilkan lewat toggle toolbar.
 
-``PRD_design_new.md`` tetap berlaku untuk interaksi: action bar Pivot/Expand/Stop,
-seleksi **klik-toggle** multi-node (tanpa Ctrl/drag), tray daftar
-``ID · label · level`` + penanda sudah-dipivot, modal konfirmasi sebelum satu
-batch POST, sidebar provenance, dan semantik edge (verified ``#22C55E`` solid,
-satu sumber ``#94A3B8`` dashed, kontradiksi ``#EF4444`` solid).
+Interaction surface from ``PRD_design.md`` tetap berlaku: action bar
+Pivot/Expand/Stop dengan status token/URL/waktu di baris terpisah, seleksi
+**klik-toggle** multi-node, tray ``ID · label · level`` + penanda sudah-dipivot,
+modal konfirmasi sebelum satu batch POST, hover tooltip 200 ms, dan Inspector
+Drawer 360 px (ID, tipe, grounding quotes, URL sumber, saran critic).
 
 Web App mode (``web_api=True``): tombol action bar POST ke server lokal
 (``/api/pivot``, ``/api/expand``, ``/api/stop``) dan halaman polling
@@ -43,33 +37,45 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from drx.textutil import compact_short_label
+
 log = logging.getLogger("drx.visualizer")
 
-# ---- PRD_design_new.md design tokens (Clean Minimalist Light) ------------------
+# ---- PRD_design.md design tokens (Dark Neon) ---------------------------------
 
-BG = "#F8FAFC"  # soft off-white canvas
-PANEL = "#FFFFFF"  # white cards/panels
-BORDER = "#E2E8F0"  # subtle border
-GRID = "#CBD5E1"  # dot grid
-TEXT = "#0F172A"  # dark slate primary text
-TEXT_MUTED = "#64748B"
-SHADOW = "rgba(15,23,42,0.08)"
-ACCENT = "#3B82F6"  # edge/node highlight (PRD §2.1)
+BG = "#0B0F17"  # near-black canvas
+PANEL = "#151C2C"  # node card / panel fill
+SURFACE = "#0F172A"  # header + inspector drawer
+BORDER = "#334155"  # default card border
+GRID = "#1E293B"  # dot grid
+TEXT = "#F8FAFC"  # primary text
+TEXT_MUTED = "#94A3B8"  # header status / muted text
+BODY_TEXT = "#CBD5E1"  # inspector body
+TOOLTIP_BG = "#1E293B"
+TOOLTIP_BORDER = "#475569"
+SHADOW = "rgba(0,0,0,0.35)"
+ACCENT = "#38BDF8"  # selected border / active edge
+SELECTED_GLOW = "rgba(56,189,248,0.35)"
+EDGE_BASE = "#334155"
 
-#: Accent badges (bg / border / text) — PRD_design_new.md §1.1.
+#: Accent badges (bg / border / text / label) — PRD_design.md §3 / §4.
 NODE_BADGES: dict[str, dict[str, str]] = {
-    "root": {"bg": "#EEF2FF", "border": "#6366F1", "text": "#4338CA"},
-    "query": {"bg": "#ECFEFF", "border": "#06B6D4", "text": "#0E7490"},
-    "individu": {"bg": "#F3E8FF", "border": "#A855F7", "text": "#6B21A8"},
-    "instansi": {"bg": "#FEF3C7", "border": "#F59E0B", "text": "#B45309"},
-    "perusahaan": {"bg": "#FEF3C7", "border": "#F59E0B", "text": "#B45309"},
-    "dokumen": {"bg": "#D1FAE5", "border": "#10B981", "text": "#047857"},
-    "peristiwa": {"bg": "#FFE4E6", "border": "#F43F5E", "text": "#BE123C"},
-    "lainnya": {"bg": "#F1F5F9", "border": "#CBD5E1", "text": "#475569"},
+    "root": {"bg": "#082F49", "border": "#0369A1", "text": "#38BDF8", "label": "KUERI"},
+    "query": {"bg": "#082F49", "border": "#0369A1", "text": "#38BDF8", "label": "KUERI"},
+    "individu": {"bg": "#2E1065", "border": "#581C87", "text": "#C084FC", "label": "INDIVIDU"},
+    "instansi": {"bg": "#451A03", "border": "#78350F", "text": "#FCD34D", "label": "INSTANSI"},
+    "perusahaan": {"bg": "#451A03", "border": "#78350F", "text": "#FCD34D", "label": "INSTANSI"},
+    "aktor": {"bg": "#450A0A", "border": "#7F1D1D", "text": "#FCA5A5", "label": "AKTOR"},
+    "peristiwa": {"bg": "#450A0A", "border": "#7F1D1D", "text": "#FCA5A5", "label": "AKTOR"},
+    "verified": {"bg": "#022C22", "border": "#064E3B", "text": "#6EE7B7", "label": "VERIFIED"},
+    "dokumen": {"bg": "#022C22", "border": "#064E3B", "text": "#6EE7B7", "label": "VERIFIED"},
+    "lainnya": {"bg": "#1E293B", "border": "#475569", "text": "#94A3B8", "label": "LAINNYA"},
 }
 
-#: Backward-compatible accent (border) color map per node type.
-NODE_COLORS: dict[str, str] = {key: value["border"] for key, value in NODE_BADGES.items()}
+#: Backward-compatible accent (text) color map per node type.
+NODE_COLORS: dict[str, str] = {
+    key: value["text"] for key, value in NODE_BADGES.items()
+}
 
 NODE_ICONS: dict[str, str] = {
     "individu": "\U0001F464",  # person
@@ -84,6 +90,7 @@ EDGE_COLORS: dict[str, str] = {
     "verified": "#22C55E",  # solid green (>= 2 independent sources)
     "single": "#94A3B8",  # dashed slate (1 source) — PRD §2.1 edge base
     "contradiction": "#EF4444",  # solid red (flagged by critic / conflict)
+    "base": EDGE_BASE,  # neutral / cross-edge line
 }
 
 
@@ -94,7 +101,8 @@ def node_badge(node_type: str, *, root: bool = False) -> dict[str, str]:
 
 
 def node_color(node_type: str) -> str:
-    return node_badge(node_type)["border"]
+    """Accent text color for a node type (same value as ``NODE_COLORS``)."""
+    return node_badge(node_type)["text"]
 
 
 def edge_style(record: dict) -> dict:
@@ -153,6 +161,16 @@ def build_payload(
         else:
             node["level"] = max(1, int(node.get("level") or 1))
         node["pivoted"] = str(node.get("id")) in pivoted
+        # Defensive normalization for legacy/custom stores: every canvas node
+        # exposes a short_label, while the full label stays untouched.
+        node["short_label"] = compact_short_label(
+            str(node.get("short_label") or ""),
+            fallback=str(node.get("label") or ""),
+        )
+        node.setdefault("summary", "")
+        node.setdefault("grounding", list(node.get("quotes") or []))
+        node.setdefault("critic_reason", "")
+        node.setdefault("created_at", 0.0)
 
     # Cross-edge = relasi mundur (target berada di kolom level lebih awal).
     # Alur utama kiri->kanan tetap dominan; edge ini disembunyikan by default
@@ -199,48 +217,52 @@ def build_payload(
 def vis_elements(payload: dict) -> dict:
     """vis.js-ready nodes/edges (initial render + ``/api/graph`` polling).
 
-    Cards are intentionally minimal: white background, thin accent border,
-    label only (ID/type/provenance live in tooltip + inspector sidebar).
-    Every node carries an explicit hierarchical ``level`` (0 root, 1 initial
-    search/Expand, then ``parent.level + 1`` per pivot branch) so the LR tree
-    is stable without edge inference.
+    Cards use the full 180 px width: ``short_label`` only is drawn on the
+    canvas, while ``full_label`` / ``summary`` stay in the payload for the
+    hover tooltip and inspector drawer. Every node carries an explicit
+    hierarchical ``level`` (0 root, 1 initial search/Expand, then
+    ``parent.level + 1`` per pivot branch) so the UD tree is stable without
+    edge inference.
     """
     nodes: list[dict] = []
     for node in payload.get("nodes", []):
-        node_type = str(node.get("type") or "lainnya").lower()
-        root = bool(node.get("root"))
-        badge = node_badge(node_type, root=root)
         level = max(0, int(node.get("level") or 0))
-        status = "verified" if node.get("verified") else f"{node.get('source_count', 0)} sumber"
-        title = (
-            f"<b>[{node.get('id')}] {node.get('label', '')}</b><br>"
-            f"Tipe: {node_type}{' (root)' if root else ''} &middot; level {level}<br>"
-            f"Status: {status} &middot; derajat {node.get('degree', 0)} &middot; "
-            f"confidence {node.get('confidence', 0.0)}"
-            + ("<br><b>sudah pernah dipivot</b>" if node.get("pivoted") else "")
+        short_label = compact_short_label(
+            str(node.get("short_label") or ""),
+            fallback=str(node.get("label") or ""),
         )
         nodes.append(
             {
                 "id": str(node.get("id")),
-                "label": str(node.get("label", "")),
-                "title": title,
+                # Vis.js draws this inside the fixed 180px card. The full
+                # label is never rendered on-canvas (PRD §4).
+                "label": short_label,
+                "full_label": str(node.get("label", "")),
+                "short_label": short_label,
+                "summary": str(node.get("summary") or ""),
+                "pivoted": bool(node.get("pivoted")),
                 "shape": "box",
                 "level": level,
+                "widthConstraint": {"minimum": 180, "maximum": 180},
+                "shapeProperties": {"borderRadius": 8},
                 "borderWidth": 1,
-                "borderWidthSelected": 4,
+                "borderWidthSelected": 2,
                 "color": {
                     "background": PANEL,
-                    "border": badge["border"],
-                    "highlight": {"background": ACCENT, "border": "#60A5FA"},
-                    "hover": {"background": PANEL, "border": badge["border"]},
+                    "border": BORDER,
+                    "highlight": {"background": PANEL, "border": ACCENT},
+                    "hover": {"background": PANEL, "border": ACCENT},
                 },
                 "font": {
                     "color": TEXT,
-                    "size": 14 if root else 13,
-                    "bold": root,
-                    "face": "Inter, system-ui, sans-serif",
+                    "size": 12,
+                    "bold": False,
+                    "face": (
+                        "Inter, -apple-system, BlinkMacSystemFont, "
+                        "Segoe UI, Roboto, sans-serif"
+                    ),
                 },
-                "margin": {"top": 8, "bottom": 8, "left": 12, "right": 12},
+                "margin": {"top": 8, "bottom": 8, "left": 10, "right": 10},
                 "shadow": {
                     "enabled": True,
                     "color": SHADOW,
@@ -274,16 +296,17 @@ def vis_elements(payload: dict) -> dict:
                 "hidden": cross,
                 "cross": cross,
                 "color": {
-                    "color": "#CBD5E1" if cross else style["color"],
+                    "color": EDGE_BASE if cross else style["color"],
                     "highlight": ACCENT,
                 },
                 "dashes": True if cross else bool(style["dashes"]),
-                "width": 1 if cross else 2,
+                "width": 1.5,
                 "font": {
                     "color": TEXT_MUTED,
-                    "size": 11,
+                    "size": 10,
                     "face": "Inter, system-ui, sans-serif",
-                    "strokeWidth": 0,
+                    "strokeWidth": 3,
+                    "strokeColor": BG,
                 },
             }
         )
@@ -299,142 +322,193 @@ def _data_json(value: object) -> str:
 
 _CSS_TEMPLATE = """
 :root {
-  --drx-bg: __BG__; --drx-panel: __PANEL__; --drx-border: __BORDER__;
-  --drx-grid: __GRID__; --drx-text: __TEXT__; --drx-muted: __TEXT_MUTED__;
-  --drx-accent: __ACCENT__;
+  --drx-bg: __BG__; --drx-panel: __PANEL__; --drx-surface: __SURFACE__;
+  --drx-border: __BORDER__; --drx-grid: __GRID__; --drx-text: __TEXT__;
+  --drx-muted: __TEXT_MUTED__; --drx-body: __BODY_TEXT__;
+  --drx-accent: __ACCENT__; --drx-tooltip: __TOOLTIP_BG__;
+  --drx-tooltip-border: __TOOLTIP_BORDER__;
 }
 html, body {
   background-color: __BG__ !important;
-  background-image: radial-gradient(__GRID__ 1px, transparent 1px);
+  background-image: radial-gradient(__GRID__ 1.5px, transparent 1.5px);
   background-size: 20px 20px;
   color: __TEXT__;
-  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   margin: 0; padding: 0;
 }
 #mynetwork, .card, .vis-network { background: transparent !important; }
-#mynetwork { border: 1px solid __BORDER__; border-radius: 12px; }
+.card { border: 0 !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important; }
+#mynetwork { border: 1px solid __GRID__; border-radius: 12px; }
 .drx-mono, code {
   font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .drx-toolbar {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-  display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;
-  align-items: center; z-index: 40; padding: 8px 12px; max-width: 96vw;
-  box-sizing: border-box;
-  background: __PANEL__; border: 1px solid __BORDER__; border-radius: 12px;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08);
+  display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+  z-index: 40; padding: 10px 12px; max-width: 96vw; box-sizing: border-box;
+  background: __SURFACE__; border: 1px solid __GRID__; border-radius: 12px;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+}
+.drx-toolbar-actions {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 8px;
 }
 .drx-btn {
   border: 1px solid __BORDER__; border-radius: 8px; cursor: pointer;
-  padding: 8px 12px; font-size: 13px; font-weight: 600; color: __TEXT__;
-  background: __PANEL__; transition: filter .15s ease;
+  padding: 8px 12px; font-size: 12px; font-weight: 600; line-height: 1;
+  letter-spacing: 0.01em; color: #FFFFFF; background: __PANEL__;
+  transition: filter .15s ease, background .15s ease, border-color .15s ease;
 }
-.drx-btn:hover { filter: brightness(0.97); }
-.drx-btn-pivot { background: #6366F1; border-color: #6366F1; color: #FFFFFF; }
-.drx-btn-expand { background: #06B6D4; border-color: #06B6D4; color: #FFFFFF; }
-.drx-btn-stop { background: #EF4444; border-color: #EF4444; color: #FFFFFF; }
-.drx-btn-cross { background: __BG__; border-color: __GRID__; color: #475569; }
-.drx-btn-cross.drx-btn-active { background: #E0F2FE; border-color: #60A5FA; color: #1D4ED8; }
-.drx-btn-ready { box-shadow: 0 0 0 3px rgba(59,130,246,0.28); }
+.drx-btn:hover { filter: brightness(1.12); }
+.drx-btn-pivot { background: #2563EB; border-color: #2563EB; }
+.drx-btn-expand { background: #0D9488; border-color: #0D9488; }
+.drx-btn-stop { background: #DC2626; border-color: #DC2626; }
+.drx-btn-cross { background: __PANEL__; border-color: __BORDER__; color: __TEXT_MUTED__; }
+.drx-btn-cross.drx-btn-active { background: #082F49; border-color: #0369A1; color: #38BDF8; }
+.drx-btn-ready { box-shadow: 0 0 0 3px rgba(56,189,248,0.28); }
 #drx-pivot-count { font-weight: 800; }
-.drx-stats {
-  font-size: 12px; color: __TEXT_MUTED__; padding: 4px 10px;
-  border-left: 1px solid __BORDER__; margin-left: 4px; white-space: nowrap;
+.drx-stats, .drx-status {
+  width: 100%; box-sizing: border-box; margin-top: 6px; text-align: center;
+  font-size: 11px; font-weight: 400; line-height: 1.2; letter-spacing: 0.02em;
+  color: __TEXT_MUTED__; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.drx-status { margin-top: 0; min-height: 13px; }
 .drx-tray {
-  display: none; position: fixed; top: 78px; left: 14px; z-index: 41;
+  display: none; position: fixed; top: 120px; left: 14px; z-index: 41;
   width: 330px; max-width: 44vw; max-height: 34vh; overflow-y: auto;
-  background: __PANEL__; border: 1px solid __BORDER__; border-radius: 12px;
-  padding: 10px 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08);
+  background: __SURFACE__; border: 1px solid __GRID__; border-radius: 12px;
+  padding: 10px 12px; box-shadow: 0 12px 30px rgba(0,0,0,0.35);
 }
 .drx-tray.drx-open { display: block; }
 .drx-tray-head {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; margin-bottom: 6px; font-size: 13px;
+  gap: 8px; margin-bottom: 6px; font-size: 12px; color: __TEXT__;
 }
 .drx-tray .drx-chip { cursor: pointer; }
 .drx-tray-empty { color: __TEXT_MUTED__; font-size: 12px; }
 .drx-modal-backdrop {
   display: none; position: fixed; inset: 0; z-index: 60;
-  background: rgba(15,23,42,0.38); align-items: center; justify-content: center;
+  background: rgba(2,6,23,0.72); align-items: center; justify-content: center;
   padding: 18px;
 }
 .drx-modal-backdrop.drx-open { display: flex; }
 .drx-modal {
   width: 460px; max-width: 94vw; max-height: 80vh; overflow-y: auto;
-  background: __PANEL__; border: 1px solid __BORDER__; border-radius: 14px;
-  padding: 18px; box-shadow: 0 18px 48px rgba(15,23,42,0.22);
+  background: __SURFACE__; border: 1px solid __BORDER__; border-radius: 12px;
+  padding: 18px; color: __BODY_TEXT__; box-shadow: 0 24px 60px rgba(0,0,0,0.55);
 }
-.drx-modal h3 { margin: 0 0 8px; font-size: 16px; }
+.drx-modal h3 { margin: 0 0 8px; font-size: 15px; line-height: 1.3; color: __TEXT__; }
 .drx-modal-list { margin: 8px 0 14px; }
 .drx-modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-.drx-modal-confirm { background: #6366F1; border-color: #6366F1; color: #FFFFFF; }
+.drx-modal-confirm { background: #2563EB; border-color: #2563EB; color: #FFFFFF; }
 .drx-level-pill {
   display: inline-block; padding: 1px 7px; border-radius: 999px;
-  background: __BG__; border: 1px solid __BORDER__; font-size: 11px;
+  background: __PANEL__; border: 1px solid __BORDER__; font-size: 10px;
+  color: __TEXT_MUTED__;
 }
 .drx-sidebar {
-  position: fixed; top: 0; right: 0; width: 360px; max-width: 92vw; height: 100vh;
-  background: __PANEL__; border-left: 1px solid __BORDER__; z-index: 45;
+  position: fixed; top: 0; right: 0; width: 360px; max-width: 100vw; height: 100vh;
+  background: __SURFACE__; border-left: 1px solid __GRID__; z-index: 45;
   transform: translateX(102%); transition: transform .22s ease;
   overflow-y: auto; padding: 18px; box-sizing: border-box;
-  box-shadow: -8px 0 24px rgba(15,23,42,0.06);
+  box-shadow: -18px 0 44px rgba(0,0,0,0.45); color: __BODY_TEXT__;
+  font-size: 12px; font-weight: 400; line-height: 1.5;
 }
 .drx-sidebar.drx-open { transform: translateX(0); }
-.drx-sidebar h3 { margin: 6px 0 12px; font-size: 15px; color: __TEXT__; }
+.drx-drawer-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 10px; margin-bottom: 12px;
+}
+.drx-sidebar h3 {
+  margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3;
+  letter-spacing: 0; color: __TEXT__;
+}
+.drx-eyebrow {
+  margin-bottom: 3px; font-size: 9px; font-weight: 600; line-height: 1;
+  letter-spacing: 0.12em; color: __TEXT_MUTED__;
+}
+.drx-inspector-name {
+  font-size: 15px; font-weight: 600; line-height: 1.3; color: __TEXT__;
+  margin-bottom: 8px;
+}
 .drx-chip {
   display: inline-block; margin: 3px 4px 3px 0; padding: 3px 9px;
-  border-radius: 999px; border: 1px solid #06B6D4; background: #ECFEFF;
-  font-size: 12px; cursor: pointer; color: #0E7490; font-family: "Fira Code", monospace;
+  border-radius: 999px; border: 1px solid #0369A1; background: #082F49;
+  font-size: 11px; cursor: pointer; color: #38BDF8;
+  font-family: "Fira Code", monospace;
 }
-.drx-chip:hover { border-color: #6366F1; color: #4338CA; }
+.drx-chip:hover { border-color: #38BDF8; color: #BAE6FD; }
 .drx-badge {
   display: inline-block; padding: 2px 8px; border-radius: 999px;
-  font-size: 11px; font-weight: 700; border: 1px solid __BORDER__;
+  font-size: 9px; font-weight: 600; line-height: 1; letter-spacing: 0.05em;
+  border: 1px solid __BORDER__;
 }
-.drx-badge-verified { color: #FFFFFF; background: #22C55E; border-color: #22C55E; }
-.drx-badge-single { color: #475569; background: #F1F5F9; }
-.drx-badge-contradiction { color: #FFFFFF; background: #EF4444; border-color: #EF4444; }
+.drx-badge-verified { color: #6EE7B7; background: #022C22; border-color: #064E3B; }
+.drx-badge-single { color: #94A3B8; background: #1E293B; border-color: #334155; }
+.drx-badge-contradiction { color: #FCA5A5; background: #450A0A; border-color: #7F1D1D; }
 .drx-card {
-  background: __PANEL__; border: 1px solid __BORDER__; border-radius: 10px;
-  padding: 10px 12px; margin: 8px 0; font-size: 13px; line-height: 1.5;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+  background: __PANEL__; border: 1px solid __BORDER__; border-radius: 8px;
+  padding: 10px; margin: 8px 0; font-size: 12px; font-weight: 400;
+  line-height: 1.5; color: __BODY_TEXT__;
 }
-.drx-muted { color: __TEXT_MUTED__; font-size: 12px; }
+.drx-card > b { display: block; margin-bottom: 4px; color: __TEXT__; }
+.drx-muted { color: __TEXT_MUTED__; font-size: 11px; line-height: 1.4; }
+.drx-grounding {
+  margin: 7px 0; padding: 2px 0 2px 10px; border-left: 3px solid __ACCENT__;
+  color: __BODY_TEXT__; font-size: 12px; line-height: 1.5;
+}
+.drx-source { margin: 5px 0; overflow-wrap: anywhere; }
+.drx-source a, a { color: __ACCENT__; text-decoration: none; }
+.drx-source a:hover, a:hover { text-decoration: underline; }
+.drx-source-host { color: __TEXT__; font-weight: 600; }
 .drx-legend {
   position: fixed; left: 14px; bottom: 14px; z-index: 40; padding: 10px 12px;
-  background: __PANEL__; border: 1px solid __BORDER__; border-radius: 12px;
-  font-size: 12px; color: __TEXT__;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08);
+  background: __SURFACE__; border: 1px solid __GRID__; border-radius: 12px;
+  font-size: 11px; color: __TEXT_MUTED__;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.35);
 }
 .drx-legend span { display: inline-flex; align-items: center; gap: 6px; margin-right: 10px; }
 .drx-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .drx-hint { display: none; margin-top: 10px; }
 .drx-hint.drx-open { display: block; }
-a { color: #0E7490; }
+.drx-tooltip {
+  display: none; position: fixed; z-index: 80; max-width: 320px;
+  padding: 10px 12px; pointer-events: none;
+  background: __TOOLTIP_BG__; border: 1px solid __TOOLTIP_BORDER__;
+  border-radius: 8px; color: __TEXT__; font-size: 11px; line-height: 1.4;
+  box-shadow: 0 14px 34px rgba(0,0,0,0.5);
+}
+.drx-tooltip.drx-open { display: block; }
+.drx-tooltip-title {
+  font-size: 12px; font-weight: 600; line-height: 1.3; color: __TEXT__;
+  margin-bottom: 4px;
+}
+.drx-tooltip-summary { color: __BODY_TEXT__; margin-bottom: 6px; }
+.drx-tooltip-meta { color: #6EE7B7; font-weight: 600; font-size: 11px; }
 blockquote { color: __TEXT_MUTED__; }
 @media (max-width: 760px) {
-  .drx-toolbar { flex-wrap: wrap; width: 94vw; justify-content: center; }
-  .drx-stats {
-    white-space: normal; width: 100%; text-align: center; border-left: 0;
-    border-top: 1px solid __BORDER__; padding-top: 6px; margin-left: 0;
-  }
+  .drx-toolbar { width: 94vw; }
+  .drx-stats, .drx-status { white-space: normal; }
   .drx-sidebar { width: 100vw; }
-  .drx-tray { top: 118px; left: 3vw; width: 94vw; max-width: 94vw; max-height: 30vh; }
+  .drx-tray { top: 140px; left: 3vw; width: 94vw; max-width: 94vw; max-height: 30vh; }
 }
 """
-
 
 def _theme_css() -> str:
     css = _CSS_TEMPLATE
     for token, value in (
         ("__BG__", BG),
         ("__PANEL__", PANEL),
+        ("__SURFACE__", SURFACE),
         ("__BORDER__", BORDER),
         ("__GRID__", GRID),
         ("__TEXT_MUTED__", TEXT_MUTED),
         ("__TEXT__", TEXT),
+        ("__BODY_TEXT__", BODY_TEXT),
         ("__ACCENT__", ACCENT),
+        ("__TOOLTIP_BG__", TOOLTIP_BG),
+        ("__TOOLTIP_BORDER__", TOOLTIP_BORDER),
     ):
         css = css.replace(token, value)
     return css
@@ -443,19 +517,22 @@ def _theme_css() -> str:
 def _toolbar_html() -> str:
     return f"""
 <div class="drx-toolbar" id="drx-toolbar">
-  <button class="drx-btn drx-btn-pivot" id="drx-btn-pivot" title="Batch query untuk semua node terpilih">
-    \u26A1 Pivot Selected Nodes (<span id="drx-pivot-count">0</span> node terpilih)
-  </button>
-  <button class="drx-btn drx-btn-cross" id="drx-btn-cross" title="Tampilkan/sembunyikan relasi mundur (cross-edge)">
-    \u2194 Cross (0)
-  </button>
-  <button class="drx-btn drx-btn-expand" id="drx-btn-expand" title="Cari gelombang dokumen level-1 baru (deep search + sudut baru)">
-    \u2795 Expand Document Pool
-  </button>
-  <button class="drx-btn drx-btn-stop" id="drx-btn-stop" title="Akhiri pencarian &amp; susun laporan final">
-    \u25A0 Stop &amp; Generate Final Report
-  </button>
-  <span class="drx-stats" id="drx-stats"></span>
+  <div class="drx-toolbar-actions">
+    <button class="drx-btn drx-btn-pivot" id="drx-btn-pivot" title="Batch query untuk semua node terpilih">
+      \u26A1 Pivot Selected Nodes (<span id="drx-pivot-count">0</span> node terpilih)
+    </button>
+    <button class="drx-btn drx-btn-cross" id="drx-btn-cross" title="Tampilkan/sembunyikan relasi mundur (cross-edge)">
+      \u2194 Cross (0)
+    </button>
+    <button class="drx-btn drx-btn-expand" id="drx-btn-expand" title="Cari gelombang dokumen level-1 baru (deep search + sudut baru)">
+      \u2795 Expand Document Pool
+    </button>
+    <button class="drx-btn drx-btn-stop" id="drx-btn-stop" title="Akhiri pencarian &amp; susun laporan final">
+      \u25A0 Stop &amp; Generate Final Report
+    </button>
+  </div>
+  <div class="drx-stats" id="drx-stats"></div>
+  <div class="drx-status" id="drx-status" role="status" aria-live="polite"></div>
 </div>
 <div class="drx-tray" id="drx-tray">
   <div class="drx-tray-head">
@@ -476,27 +553,32 @@ def _toolbar_html() -> str:
   </div>
 </div>
 <div class="drx-legend" id="drx-legend">
-  <div style="margin-bottom:6px;font-weight:600">Legenda</div>
+  <div style="margin-bottom:6px;font-weight:600;color:{TEXT}">Legenda</div>
   <div>
-    <span><i class="drx-dot" style="background:{NODE_BADGES['root']['bg']};border:2px solid {NODE_BADGES['root']['border']}"></i>Target / Root</span>
+    <span><i class="drx-dot" style="background:{NODE_BADGES['root']['bg']};border:2px solid {NODE_BADGES['root']['border']}"></i>Kueri</span>
     <span><i class="drx-dot" style="background:{NODE_BADGES['individu']['bg']};border:2px solid {NODE_BADGES['individu']['border']}"></i>Individu</span>
-    <span><i class="drx-dot" style="background:{NODE_BADGES['instansi']['bg']};border:2px solid {NODE_BADGES['instansi']['border']}"></i>Instansi/Perusahaan</span>
-    <span><i class="drx-dot" style="background:{NODE_BADGES['query']['bg']};border:2px solid {NODE_BADGES['query']['border']}"></i>Kueri/Saran</span>
+    <span><i class="drx-dot" style="background:{NODE_BADGES['instansi']['bg']};border:2px solid {NODE_BADGES['instansi']['border']}"></i>Instansi</span>
+    <span><i class="drx-dot" style="background:{NODE_BADGES['aktor']['bg']};border:2px solid {NODE_BADGES['aktor']['border']}"></i>Aktor</span>
+    <span><i class="drx-dot" style="background:{NODE_BADGES['verified']['bg']};border:2px solid {NODE_BADGES['verified']['border']}"></i>Verified</span>
   </div>
   <div style="margin-top:6px" class="drx-muted">
     <span style="border-top:3px solid {EDGE_COLORS['verified']};width:26px;display:inline-block"></span> terverifikasi
     <span style="border-top:3px dashed {EDGE_COLORS['single']};width:26px;display:inline-block;margin-left:8px"></span> 1 sumber
     <span style="border-top:3px solid {EDGE_COLORS['contradiction']};width:26px;display:inline-block;margin-left:8px"></span> kontradiksi
-    <span style="border-top:2px dashed #CBD5E1;width:26px;display:inline-block;margin-left:8px"></span> cross-edge
+    <span style="border-top:2px dashed {EDGE_BASE};width:26px;display:inline-block;margin-left:8px"></span> cross-edge
   </div>
 </div>
+<div class="drx-tooltip" id="drx-tooltip" role="tooltip" aria-hidden="true"></div>
 <div class="drx-sidebar" id="drx-sidebar">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h3 style="margin:0">Inspeksi Node</h3>
-    <button class="drx-btn" id="drx-close" style="padding:4px 9px">\u2715</button>
+  <div class="drx-drawer-head">
+    <div>
+      <div class="drx-eyebrow">INSPECTOR</div>
+      <h3>Inspeksi Node</h3>
+    </div>
+    <button class="drx-btn" id="drx-close" style="padding:4px 9px" aria-label="Tutup inspector">\u2715</button>
   </div>
   <div id="drx-inspector">
-    <p class="drx-muted">Klik node untuk memilih/melepas (bisa banyak), lalu cek daftar di kiri sebelum Pivot.</p>
+    <p class="drx-muted">Klik node untuk membuka detail, atau klik untuk memilih/melepas (bisa banyak).</p>
   </div>
   <div id="drx-suggest-wrap">
     <h3>Saran Node (Critic)</h3>
@@ -505,7 +587,6 @@ def _toolbar_html() -> str:
   <div id="drx-action-hint" class="drx-card drx-hint"></div>
 </div>
 """
-
 
 _JS_TEMPLATE = r"""
 const DRX = __DRX_JSON__;
@@ -524,11 +605,19 @@ const DRX_BADGES = __DRX_BADGES__;
     return '<span class="drx-badge" style="background:' + badge.bg +
       ';border-color:' + badge.border + ';color:' + badge.text + '">' + text + '</span>';
   }
-  function typeBadge(record) {
+  function badgeKey(record) {
     var key = record.root ? "root" : String(record.type || "lainnya").toLowerCase();
-    var badge = DRX_BADGES[key] || DRX_BADGES.lainnya;
-    var label = record.root ? "ROOT / PROMPT" : key.toUpperCase();
-    return badgeHtml(badge, label);
+    if (key === "perusahaan") return "instansi";
+    if (key === "peristiwa") return "aktor";
+    if (key === "dokumen") return "verified";
+    return DRX_BADGES[key] ? key : "lainnya";
+  }
+  function badgeMeta(record) {
+    return DRX_BADGES[badgeKey(record)] || DRX_BADGES.lainnya;
+  }
+  function typeBadge(record) {
+    var badge = badgeMeta(record);
+    return badgeHtml(badge, badge.label || badgeKey(record).toUpperCase());
   }
   function statusBadge(record) {
     if (record.contradiction) return '<span class="drx-badge drx-badge-contradiction">KONTRADIKSI</span>';
@@ -537,16 +626,69 @@ const DRX_BADGES = __DRX_BADGES__;
   }
 
   // ---- selection feedback + cross-edge toggle ------------------------------
-  var DRX_SELECTED_BG = "#3B82F6";
-  var DRX_SELECTED_BORDER = "#60A5FA";
-  var DRX_SELECTED_GLOW = "rgba(96,165,250,0.85)";
+  var DRX_SELECTED_BG = "#151C2C";
+  var DRX_SELECTED_BORDER = "#38BDF8";
+  var DRX_SELECTED_GLOW = "rgba(56,189,248,0.35)";
   var drxBaseStyles = {};
   var drxShowCross = false;
   var drxSelected = {};
   var drxPivoted = {};
   var drxSelectedSyncing = false;
+  var drxSelectGuard = false;
   var drxModalIds = [];
   var drxCycle = (DRX.meta || {}).cycle || 0;
+  var drxHoverTimer = null;
+  var drxHoverNode = null;
+  var drxPointer = { x: 0, y: 0 };
+  var drxRootAnchored = false;
+  var drxRootAnchorAttempts = 0;
+
+  // Vis.js centers the complete hierarchy in the viewport. The PRD anchors the
+  // level-0 root at the top center instead, so pan once after the first layout.
+  function anchorRootTop() {
+    if (drxRootAnchored || typeof network === "undefined" || !network) return;
+    var root = null;
+    (DRX.nodes || []).some(function(node) {
+      if (node && node.root) { root = node; return true; }
+      return false;
+    });
+    if (!root && DRX.nodes && DRX.nodes.length) root = DRX.nodes[0];
+    if (!root) return;
+    var positions = network.getPositions([root.id]) || {};
+    var position = positions[root.id];
+    if (!position || !isFinite(position.x) || !isFinite(position.y)) {
+      if (drxRootAnchorAttempts++ < 6) setTimeout(anchorRootTop, 80);
+      return;
+    }
+    var container = $("mynetwork");
+    if (!container) return;
+    var rect = container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    var toolbar = $("drx-toolbar");
+    var toolbarBottom = toolbar
+      ? toolbar.getBoundingClientRect().bottom
+      : rect.top + 80;
+    var target = {
+      x: rect.width / 2,
+      y: toolbarBottom + 48 - rect.top
+    };
+    network.moveTo({
+      position: { x: position.x, y: position.y },
+      offset: { x: 0, y: 0 },
+      scale: network.getScale(),
+      animation: false
+    });
+    var center = network.canvasToDOM(
+      network.getPositions([root.id])[root.id]
+    );
+    network.moveTo({
+      position: { x: position.x, y: position.y },
+      offset: { x: target.x - center.x, y: target.y - center.y },
+      scale: network.getScale(),
+      animation: false
+    });
+    drxRootAnchored = true;
+  }
 
   function rememberNodeStyles(list) {
     (list || []).forEach(function(n) {
@@ -561,6 +703,120 @@ const DRX_BADGES = __DRX_BADGES__;
 
   function nodeRecord(id) {
     return (DRX.nodes || []).find(function(n) { return String(n.id) === String(id); });
+  }
+
+  function nodeShortLabel(record) {
+    var value = String(record.short_label || record.label || "")
+      .replace(/\s+/g, " ").trim();
+    return value.length > 20 ? value.slice(0, 17).replace(/\s+$/, "") + "..." : value;
+  }
+
+  function drawRoundRect(ctx, x, y, width, height, radius) {
+    var r = Math.min(radius, width / 2, height / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function makeNodeRenderer(record) {
+    return function(options) {
+      // vis-network calls drawNode() with no arguments; x/y/state are passed
+      // to ctxRenderer itself (vis 9.1.x API).
+      var x = Number(options.x || 0);
+      var y = Number(options.y || 0);
+      var state = options.state || {};
+      return {
+        nodeDimensions: { width: 180, height: 54 },
+        drawNode: function() {
+          var ctx = options.ctx;
+          var selected = !!state.selected || !!drxSelected[String(record.id)];
+          var hovered = !!state.hover;
+          var left = x - 90;
+          var top = y - 27;
+          var badge = badgeMeta(record);
+
+          ctx.save();
+          drawRoundRect(ctx, left, top, 180, 54, 8);
+          ctx.fillStyle = "#151C2C";
+          if (selected || hovered) {
+            ctx.shadowColor = selected
+              ? "rgba(56,189,248,0.35)"
+              : "rgba(56,189,248,0.22)";
+            ctx.shadowBlur = selected ? 12 : 8;
+            ctx.shadowOffsetY = 0;
+          } else {
+            ctx.shadowColor = "rgba(0,0,0,0.35)";
+            ctx.shadowBlur = 8;
+            ctx.shadowOffsetY = 3;
+          }
+          ctx.fill();
+          ctx.shadowColor = "transparent";
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetY = 0;
+          ctx.strokeStyle = selected ? "#38BDF8" : (hovered ? "#475569" : "#334155");
+          ctx.lineWidth = selected ? 2 : 1;
+          ctx.stroke();
+
+          // Type badge (bg/border/text exactly from the PRD palette).
+          var badgeText = String(badge.label || badgeKey(record).toUpperCase());
+          ctx.font = "600 9px Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif";
+          var badgeWidth = Math.ceil(ctx.measureText(badgeText).width) + 16;
+          var badgeHeight = 16;
+          var badgeX = left + 10;
+          var badgeY = top + 8;
+          drawRoundRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, 8);
+          ctx.fillStyle = badge.bg;
+          ctx.fill();
+          ctx.strokeStyle = badge.border;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = badge.text;
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText(badgeText, badgeX + 8, badgeY + badgeHeight / 2 + 0.5);
+
+          // Short title only: 1-3 words / max 20 chars.
+          ctx.font = "500 12px Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif";
+          ctx.fillStyle = "#F8FAFC";
+          ctx.fillText(nodeShortLabel(record), left + 10, top + 38);
+
+          if (record.pivoted) {
+            ctx.font = "600 11px Inter, sans-serif";
+            ctx.fillStyle = "#FCD34D";
+            ctx.textAlign = "right";
+            ctx.fillText("\u21BB", left + 170, top + 16);
+          }
+          if (record.verified && badgeKey(record) !== "verified") {
+            ctx.font = "600 11px Inter, sans-serif";
+            ctx.fillStyle = "#6EE7B7";
+            ctx.textAlign = "right";
+            ctx.fillText("\u2713", left + (record.pivoted ? 152 : 170), top + 16);
+          }
+          ctx.restore();
+        }
+      };
+    };
+  }
+
+  function installNodeRenderers() {
+    if (typeof nodes === "undefined" || !nodes || !nodes.update) return;
+    try {
+      nodes.update((DRX.nodes || []).map(function(record) {
+        return {
+          id: String(record.id),
+          shape: "custom",
+          ctxRenderer: makeNodeRenderer(record)
+        };
+      }));
+    } catch (e) {}
   }
 
   function selectedIds() {
@@ -586,11 +842,14 @@ const DRX_BADGES = __DRX_BADGES__;
     if (typeof network === "undefined" || !network) return;
     var ids = selectedIds();
     drxSelectedSyncing = true;
+    drxSelectGuard = true;
     try {
       if (ids.length) network.selectNodes(ids);
       else network.unselectAll();
     } catch (e) {} finally {
       drxSelectedSyncing = false;
+      // Defer releasing the guard: vis.js emits selectNode synchronously.
+      setTimeout(function() { drxSelectGuard = false; }, 0);
     }
   }
 
@@ -668,9 +927,9 @@ const DRX_BADGES = __DRX_BADGES__;
             highlight: { background: DRX_SELECTED_BG, border: DRX_SELECTED_BORDER },
             hover: { background: DRX_SELECTED_BG, border: DRX_SELECTED_BORDER }
           },
-          borderWidth: 4,
+          borderWidth: 2,
           font: font,
-          shadow: { enabled: true, color: DRX_SELECTED_GLOW, size: 24, x: 0, y: 0 }
+          shadow: { enabled: true, color: DRX_SELECTED_GLOW, size: 12, x: 0, y: 0 }
         });
       } else {
         updates.push({
@@ -750,29 +1009,121 @@ const DRX_BADGES = __DRX_BADGES__;
   }
 
   function showNode(id) {
-    var node = DRX.nodes.find(function(n) { return String(n.id) === String(id); });
+    var node = nodeRecord(id);
     if (!node) return;
-    var key = node.root ? "root" : String(node.type || "lainnya").toLowerCase();
-    var badge = DRX_BADGES[key] || DRX_BADGES.lainnya;
+    var badge = badgeMeta(node);
+    var grounding = (node.grounding && node.grounding.length)
+      ? node.grounding : (node.quotes || []);
+    var quotes = grounding.map(function(q) {
+      return '<blockquote class="drx-grounding">\u201C' + esc(q) + '\u201D</blockquote>';
+    }).join("") || '<span class="drx-muted">(tanpa kutipan grounding)</span>';
     var sources = (node.sources || []).map(function(url) {
       var clean = esc(url);
-      return '<div style="margin:4px 0"><a href="' + clean + '" target="_blank" rel="noopener">' + clean + '</a></div>';
+      var host = "";
+      try { host = esc(new URL(String(url)).host); } catch (err) {}
+      return '<div class="drx-source"><a href="' + clean +
+        '" target="_blank" rel="noopener"><span class="drx-source-host">' + host +
+        '</span> ' + clean + "</a></div>";
     }).join("") || '<span class="drx-muted">(tanpa URL sumber)</span>';
-    var quotes = (node.quotes || []).map(function(q) {
-      return '<blockquote style="margin:6px 0;padding-left:10px;border-left:3px solid ' +
-        badge.border + '">\u201C' + esc(q) + '\u201D</blockquote>';
-    }).join("") || '<span class="drx-muted">(tanpa kutipan)</span>';
     var aliases = (node.aliases || []).length
       ? '<div class="drx-muted">Alias: ' + esc((node.aliases || []).join(", ")) + "</div>" : "";
+    var reasons = (DRX.suggestions || []).filter(function(s) {
+      return String(s.node_id) === String(node.id);
+    }).map(function(s) {
+      return '<div class="drx-card"><b>' + esc(s.label || s.node_id) + "</b>" +
+        '<div class="drx-muted">' + esc(s.reason || "") + "</div></div>";
+    }).join("");
+    if (!reasons && node.critic_reason) {
+      reasons = '<div class="drx-card">' + esc(node.critic_reason) + "</div>";
+    }
+    if (!reasons) {
+      reasons = '<span class="drx-muted">Belum ada saran critic untuk node ini.</span>';
+    }
+    var created = "";
+    if (Number(node.created_at || 0) > 0) {
+      try {
+        created = new Date(Number(node.created_at) * 1000).toLocaleString("id-ID");
+      } catch (err) {}
+    }
+    var confidence = Number(node.confidence || 0);
     $("drx-inspector").innerHTML =
-      '<div class="drx-card"><div class="drx-mono" style="color:' + badge.text + '">[' +
-      esc(node.id) + "] " + esc(node.label) + "</div>" +
-      '<div style="margin:6px 0">' + typeBadge(node) + " " + statusBadge(node) + "</div>" + aliases +
-      '<div class="drx-muted">Tipe: ' + esc(node.type) + " \u00B7 derajat " + esc(node.degree) +
-      ' \u00B7 confidence ' + esc((node.confidence || 0).toFixed ? node.confidence.toFixed(2) : node.confidence) + "</div></div>" +
-      '<div class="drx-card"><b>Bukti (Grounding)</b>' + quotes + "</div>" +
-      '<div class="drx-card"><b>Sumber</b>' + sources + "</div>";
+      '<div class="drx-inspector-name">[' + esc(node.id) + "] " + esc(node.label) + "</div>" +
+      '<div style="margin:8px 0">' + typeBadge(node) + " " + statusBadge(node) +
+      ' <span class="drx-badge" style="background:#1E293B;border-color:#334155;color:#94A3B8">CONF ' +
+      esc(confidence.toFixed(2)) + "</span>" +
+      (node.pivoted
+        ? ' <span class="drx-badge" style="background:#451A03;border-color:#78350F;color:#FCD34D">SUDAH DIPIVOT</span>'
+        : "") + "</div>" +
+      '<div class="drx-card"><div class="drx-muted">Node ID</div>' +
+      '<div class="drx-mono" style="color:' + badge.text + '">' + esc(node.id) + "</div>" +
+      '<div class="drx-muted" style="margin-top:6px">Short label: ' +
+      esc(node.short_label || "") + " \u00B7 level " + esc(node.level) +
+      " \u00B7 derajat " + esc(node.degree) + " \u00B7 confidence " +
+      esc(confidence.toFixed(2)) + (created ? " \u00B7 dibuat " + esc(created) : "") +
+      "</div>" + aliases + "</div>" +
+      '<div class="drx-card"><b>Bukti Grounding</b>' + quotes + "</div>" +
+      '<div class="drx-card"><b>URL Sumber</b>' + sources + "</div>" +
+      '<div class="drx-card"><b>Saran Critic</b>' + reasons + "</div>";
     $("drx-sidebar").classList.add("drx-open");
+  }
+
+  function nodeSummary(node) {
+    var summary = String(node.summary || "").replace(/\s+/g, " ").trim();
+    if (summary) return summary;
+    var quotes = node.grounding || node.quotes || [];
+    if (quotes.length) {
+      var first = String(quotes[0] || "").replace(/\s+/g, " ").trim();
+      var match = first.match(/^[\s\S]*?[.!?](?:\s|$)/);
+      var sentence = match ? match[0].trim() : first;
+      if (sentence) return sentence.slice(0, 180);
+    }
+    return String(node.label || "Node") + " - " +
+      Number(node.source_count || 0) + " sumber independen.";
+  }
+
+  function hideTooltip() {
+    if (drxHoverTimer) {
+      clearTimeout(drxHoverTimer);
+      drxHoverTimer = null;
+    }
+    drxHoverNode = null;
+    var box = $("drx-tooltip");
+    if (box) {
+      box.classList.remove("drx-open");
+      box.setAttribute("aria-hidden", "true");
+    }
+  }
+
+  function positionTooltip() {
+    var box = $("drx-tooltip");
+    if (!box || !box.classList.contains("drx-open")) return;
+    var gap = 16;
+    var left = drxPointer.x + gap;
+    var top = drxPointer.y + gap;
+    var width = box.offsetWidth || 280;
+    var height = box.offsetHeight || 100;
+    if (left + width > window.innerWidth - 12) left = drxPointer.x - width - gap;
+    if (top + height > window.innerHeight - 12) top = drxPointer.y - height - gap;
+    box.style.left = Math.max(12, Math.round(left)) + "px";
+    box.style.top = Math.max(12, Math.round(top)) + "px";
+  }
+
+  function showTooltip(id) {
+    var node = nodeRecord(id);
+    var box = $("drx-tooltip");
+    if (!node || !box) return;
+    var count = Number(node.source_count || 0);
+    var countText = node.verified
+      ? "Verified " + count + " Sumber"
+      : count + " Sumber";
+    if (node.pivoted) countText += " \u00B7 sudah dipivot";
+    box.innerHTML =
+      '<div class="drx-tooltip-title">' + esc(node.label) + "</div>" +
+      '<div class="drx-tooltip-summary">' + esc(nodeSummary(node)) + "</div>" +
+      '<div class="drx-tooltip-meta">' + esc(countText) + "</div>";
+    box.classList.add("drx-open");
+    box.setAttribute("aria-hidden", "false");
+    positionTooltip();
   }
 
   function showEdge(index) {
@@ -782,7 +1133,7 @@ const DRX_BADGES = __DRX_BADGES__;
       return '<div style="margin:4px 0"><a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + "</a></div>";
     }).join("") || '<span class="drx-muted">(tanpa URL sumber)</span>';
     $("drx-inspector").innerHTML =
-      '<div class="drx-card"><div class="drx-mono" style="color:#0E7490">' + esc(record.source) + " \u2192 " + esc(record.target) + "</div>" +
+      '<div class="drx-card"><div class="drx-mono" style="color:#38BDF8">' + esc(record.source) + " \u2192 " + esc(record.target) + "</div>" +
       '<div style="margin:6px 0">' + statusBadge(record) + "</div>" +
       "<div>Predikat: <b>" + esc(record.predicate) + "</b></div>" +
       '<div class="drx-muted">confidence ' + esc(record.confidence) + "</div></div>" +
@@ -916,6 +1267,7 @@ const DRX_BADGES = __DRX_BADGES__;
     DRX.edges = data.edges || DRX.edges;
     DRX.suggestions = data.suggestions || [];
     DRX.meta = data.meta || DRX.meta;
+    installNodeRenderers();
     drxPivoted = {};
     ((DRX.meta || {}).pivoted_nodes || []).forEach(function(id) {
       drxPivoted[String(id)] = true;
@@ -939,6 +1291,7 @@ const DRX_BADGES = __DRX_BADGES__;
   function bind() {
     if (typeof network === "undefined" || !network) { setTimeout(bind, 150); return; }
     rememberNodeStyles(nodes.get());
+    installNodeRenderers();
     drxPivoted = {};
     ((DRX.meta || {}).pivoted_nodes || []).forEach(function(id) {
       drxPivoted[String(id)] = true;
@@ -998,9 +1351,45 @@ const DRX_BADGES = __DRX_BADGES__;
       postAction("/api/pivot", { node_ids: ids }, "Pivot dikirim: " + ids.join(", "));
       closePivotModal();
     });
+    document.addEventListener("mousemove", function(event) {
+      drxPointer.x = event.clientX;
+      drxPointer.y = event.clientY;
+      positionTooltip();
+    });
+    var canvas = $("mynetwork");
+    if (canvas) canvas.addEventListener("mouseleave", hideTooltip);
+    network.on("hoverNode", function(params) {
+      var id = String(params.node);
+      drxHoverNode = id;
+      if (drxHoverTimer) clearTimeout(drxHoverTimer);
+      drxHoverTimer = setTimeout(function() {
+        if (drxHoverNode === id) showTooltip(id);
+      }, 200);
+    });
+    network.on("blurNode", hideTooltip);
+    network.on("dragStart", hideTooltip);
+    network.on("zoom", hideTooltip);
+    // PRD: clicking/selecting a node opens the 360px inspector drawer.
+    function handleNodeSelection(params) {
+      hideTooltip();
+      if (drxSelectGuard || drxSelectedSyncing) return;
+      var selected = params.node != null
+        ? params.node
+        : (params.nodes && params.nodes.length ? params.nodes[0] : null);
+      if (selected == null) return;
+      var id = String(selected);
+      if (nodeRecord(id)) showNode(id);
+    }
+    network.on("selectNode", handleNodeSelection);
+    // Some vis-network builds emit ``select`` (with a nodes array) for
+    // programmatic/custom-shape selection; keep the drawer in sync.
+    network.on("select", handleNodeSelection);
     network.on("click", function(params) {
+      hideTooltip();
       if (params.edges && params.edges.length) {
-        showEdge(Number(params.edges[0]) - 1);
+        var edgeId = String(params.edges[0]);
+        var match = /^e(\d+)$/.exec(edgeId);
+        showEdge(match ? Number(match[1]) : Number(edgeId) - 1);
         return;
       }
       if (!params.nodes || !params.nodes.length) return;
@@ -1009,6 +1398,7 @@ const DRX_BADGES = __DRX_BADGES__;
       syncNetworkSelection();
       applySelectionStyles();
       renderSelectionTray();
+      // Keep the drawer open even when the click toggles the node off.
       showNode(id);
     });
     document.addEventListener("keydown", function(event) {
@@ -1021,6 +1411,7 @@ const DRX_BADGES = __DRX_BADGES__;
     renderSuggestions();
     renderStats();
     renderSelectionTray();
+    setTimeout(anchorRootTop, 80);
     if (DRX_WEB) {
       setInterval(function() {
         fetch(DRX_API + "/api/graph", { cache: "no-store" })
@@ -1051,7 +1442,7 @@ def _inject(pyvis_html: str, payload: dict, *, web_api: bool = False) -> str:
         html = html.replace("</head>", css + "</head>", 1)
     else:
         html = css + html
-    markup = _toolbar_html() + '<span id="drx-status" class="drx-muted" style="position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:41"></span>'
+    markup = _toolbar_html()
     if "</body>" in html:
         html = html.replace("</body>", markup + "<script id=\"drx-app\">" + script + "</script></body>", 1)
     else:
@@ -1084,35 +1475,49 @@ def _render_with_pyvis(
     options = {
         "nodes": {
             "shape": "box",
+            "widthConstraint": {"minimum": 180, "maximum": 180},
+            "shapeProperties": {"borderRadius": 8},
             "font": {
-                "face": "Inter, system-ui, sans-serif",
+                "face": "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
                 "color": TEXT,
-                "size": 14,
+                "size": 12,
             },
+            "color": {"background": PANEL, "border": BORDER},
         },
-        # PRD_design_new.md §2.1: hierarchical Left-to-Right mindmap, physics off.
+        # PRD_design.md §2.1: hierarchical Top-to-Bottom mindmap, physics off.
         # Node levels are explicit (0 root, 1 initial, 2+ pivot) so the tree is
         # stable even before all edges arrive.
         "layout": {
             "hierarchical": {
                 "enabled": True,
-                "direction": "LR",
+                "direction": "UD",
                 "sortMethod": "directed",
                 "nodeSpacing": 180,
-                "levelSeparation": 350,
+                "levelSeparation": 130,
+                "treeSpacing": 200,
+                "blockShifting": True,
+                "edgeMinimization": True,
+                "parentCentralization": True,
             }
         },
         "physics": {"enabled": False},
         "edges": {
-            "arrows": {"to": {"enabled": True, "scaleFactor": 0.6}},
+            "arrows": {"to": {"enabled": True, "scaleFactor": 0.55}},
             "smooth": {
                 "type": "cubicBezier",
-                "forceDirection": "horizontal",
+                "forceDirection": "vertical",
                 "roundness": 0.45,
             },
-            "color": {"color": EDGE_COLORS["single"], "highlight": ACCENT},
-            "width": 2,
-            "selectionWidth": 3,
+            "color": {"color": EDGE_BASE, "highlight": ACCENT},
+            "width": 1.5,
+            "selectionWidth": 2.5,
+            "font": {
+                "color": TEXT_MUTED,
+                "size": 10,
+                "face": "Inter, system-ui, sans-serif",
+                "strokeWidth": 2,
+                "strokeColor": BG,
+            },
         },
         "interaction": {
             "hover": True,
@@ -1121,7 +1526,7 @@ def _render_with_pyvis(
             "multiselect": False,
             "selectable": True,
             "selectConnectedEdges": False,
-            "tooltipDelay": 120,
+            "tooltipDelay": 200,
             "navigationButtons": True,
             "keyboard": {"bindToWindow": False},
         },
@@ -1149,12 +1554,14 @@ def _render_fallback(payload: dict) -> str:
 
     nodes_html = "".join(
         f"""<div class="drx-card">
-  <div class="drx-mono" style="color:{_badge(n)['text']}">[{n.get('id')}] {n.get('label', '')}
-  <span class="drx-badge" style="background:{_badge(n)['bg']};border-color:{_badge(n)['border']};color:{_badge(n)['text']}">{'ROOT / PROMPT' if n.get('root') else str(n.get('type') or 'lainnya').upper()}</span></div>
+  <div class="drx-mono" style="color:{_badge(n)['text']}">[{n.get('id')}] {n.get('short_label') or n.get('label', '')}
+  <span class="drx-badge" style="background:{_badge(n)['bg']};border-color:{_badge(n)['border']};color:{_badge(n)['text']}">{_badge(n).get('label', str(n.get('type') or 'lainnya').upper())}</span></div>
+  <div style="color:{TEXT};font-size:13px;margin-bottom:4px">{n.get('label', '')}</div>
   <div class="drx-muted">tipe: {n.get('type')} &middot; sumber: {n.get('source_count', 0)}
   &middot; derajat: {n.get('degree', 0)} &middot; confidence: {n.get('confidence', 0.0)}</div>
-  <div>{''.join(f'<blockquote style="margin:6px 0;padding-left:10px;border-left:3px solid {_badge(n)["border"]}">&ldquo;{q}&rdquo;</blockquote>' for q in (n.get('quotes') or []))}</div>
-  <div>{''.join(f'<div><a href="{s}" target="_blank" rel="noopener">{s}</a></div>' for s in (n.get('sources') or []))}</div>
+  <div>{''.join(f'<blockquote class="drx-grounding">&ldquo;{q}&rdquo;</blockquote>' for q in (n.get('quotes') or []))}</div>
+  <div>{''.join(f'<div class="drx-source"><a href="{s}" target="_blank" rel="noopener">{s}</a></div>' for s in (n.get('sources') or []))}</div>
+  <div><b>Saran Critic:</b> <span class="drx-muted">{n.get('critic_reason') or '(belum ada)'}</span></div>
 </div>"""
         for n in payload.get("nodes", [])
     )
@@ -1180,7 +1587,7 @@ def _render_fallback(payload: dict) -> str:
 <style>{_theme_css()}</style></head>
 <body>
 {_toolbar_html()}
-<main style="max-width:1080px;margin:70px auto 40px;padding:0 16px">
+<main style="max-width:1080px;margin:130px auto 40px;padding:0 16px">
   <h2 style="font-size:18px">Kanvas statis (PyVis tidak terpasang)</h2>
   <p class="drx-muted">Target: {meta.get('target', '')} &middot; konteks: {meta.get('context', '') or '-'}
   &middot; siklus {meta.get('cycle', 0)} &middot; {meta.get('nodes', 0)} node / {meta.get('edges', 0)} edge

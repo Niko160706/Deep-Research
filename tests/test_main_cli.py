@@ -372,7 +372,8 @@ def test_main_interactive_mode_runs_wizard_and_deletes_declined_run(
     monkeypatch.setattr(sys, "stdin", _TTY())
     _feed(
         monkeypatch,
-        ["1", "Sri Lestari", "Dinas Kesehatan", "3", "n", "n"],  # mode, query, ctx, deep, verbose, save?
+        ["1", "1", "Sri Lestari", "Dinas Kesehatan", "3", "n", "n"],
+        # modus utama, interface, query, ctx, deep, verbose, save?
     )
 
     rc = main.main(["--config", str(_write_config(tmp_path))])
@@ -392,7 +393,8 @@ def test_main_interactive_mode_keeps_accepted_run(monkeypatch, tmp_path):
     created: list = []
     monkeypatch.setattr(main, "Orchestrator", _fake_orchestrator_factory(created))
     monkeypatch.setattr(sys, "stdin", _TTY())
-    _feed(monkeypatch, ["1", "Sri Lestari", "", "2", "", ""])  # mode, save? -> default yes
+    _feed(monkeypatch, ["1", "1", "Sri Lestari", "", "2", "", ""])
+    # modus utama, interface, query, ctx, depth, verbose, save? -> default yes
 
     assert main.main(["--config", str(_write_config(tmp_path))]) == 0
     assert created[0].run_dir.exists()

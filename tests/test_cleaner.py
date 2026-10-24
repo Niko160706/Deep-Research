@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from drx.models import Document
 from drx.muscle.cleaner import (
+    ENTITY_LIKELIHOOD_MIN,
     Cleaner,
     _is_login_wall,
     identity_slug_match,
@@ -68,6 +69,23 @@ def test_entity_likelihood_exploratory_bonus() -> None:
         text, "Nur Royul Amin", "", exploratory_terms=["Jaringan Riset"]
     )
     assert score == 0.7  # 0.5 name + 0.2 exploratory entity
+
+
+def test_cleaner_uses_loosened_entity_threshold(monkeypatch) -> None:
+    """A 0.40 score now survives; 0.34 still fails the 0.35 gate."""
+    assert ENTITY_LIKELIHOOD_MIN == 0.35
+    cleaner = Cleaner(min_text_length=1, bm25_keep_top_k=5)
+    doc_keep = Document(url="http://keep", text="Nur Royul Amin menulis riset.")
+    doc_drop = Document(url="http://drop", text="Nur Royul Amin menulis riset.")
+
+    def fake_score(probe, entities, context, url, body):
+        return (0.40 if url.endswith("/keep") else 0.34), entities[0]
+
+    monkeypatch.setattr(
+        Cleaner, "_best_entity_score", staticmethod(fake_score)
+    )
+    docs = cleaner.clean([doc_keep, doc_drop], query="Nur Royul Amin")
+    assert [d.url for d in docs] == ["http://keep"]
 
 
 def test_cleaner_keeps_exploratory_doc_with_strong_name_match() -> None:
@@ -371,11 +389,15 @@ def test_linkedin_lookalike_username_not_rescued() -> None:
 
 
 def test_homonym_profile_bonus_cannot_outweigh_penalty() -> None:
-    """0.5 name - 0.4 homonym + 0.3 profile = 0.4 < 0.5 -> dropped."""
+    """0.5 name - 0.4 homonym + 0.3 profile bonus = 0.4."""
     text = "Ainun Najib Febrya Rahman profil mahasiswa Universitas Muhammadiyah."
     assert validate_entity_likelihood(
         text, "Ainun Najib", url="https://github.com/ainun-najib-febrya"
     ) == 0.4
+    cleaner = Cleaner(min_text_length=1, bm25_keep_top_k=5)
+    doc = Document(url="https://github.com/ainun-najib-febrya", text=text)
+    # Score 0.4 passes the loosened 0.35 floor, but the homonym veto still wins.
+    assert cleaner.clean([doc], query="Ainun Najib") == []
 
 
 # ---- Identity pages (URL slug == name) ----

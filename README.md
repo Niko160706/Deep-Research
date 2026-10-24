@@ -37,11 +37,12 @@ BRAVE_SEARCH_API_KEY=...           # https://brave.com/search/api/
 SEARXNG_URL=http://localhost:8080  # SearXNG lokal (docker)
 TOR_PROXY=socks5://127.0.0.1:9050  # TOR SOCKS proxy (docker)
 
-# Phase 2 LLM synthesis (pilih minimal satu; urutan auto: Gemini -> OpenRouter -> Groq)
-GEMINI_API_KEY=...                 # Google AI Studio — provider utama (gemini-3.8-flash, fallback 3.7 -> 3.5)
-# OPENROUTER_API_KEY=...           # fallback OpenAI-compatible (google/gemini-3.8-flash)
-# GROQ_API_KEY=...                 # fallback terakhir (qwen/qwen3.8-27b)
-#   Groq free tier: ITPM ~7.000 input token/menit — prompt lebih besar dipangkas otomatis.
+# Phase 2 LLM hierarchy (auto: Groq gpt-oss-120b -> Groq qwen3.8-27b -> Gemini)
+GROQ_API_KEY=...                   # PRIMARY gpt-oss-120b + SECONDARY qwen3.8-27b
+GEMINI_API_KEY=...                 # TERTIARY / last resort (kuota ~20 request/hari)
+# OPENROUTER_API_KEY=...           # explicit-only (tidak masuk rantai auto)
+#   Groq free tier: ITPM ~7.000 input token/menit + OTPM ~1.000 output token/menit
+#   -> prompt dipangkas otomatis, output critic/extractor 350-400 token, jeda 2 detik.
 ```
 
 ### Local search stack (opsional, untuk SearXNG + TOR)
@@ -56,7 +57,7 @@ docker compose down
 | `backend` | Sumber | Catatan |
 |---|---|---|
 | `hybrid` *(default)* | SearXNG + Tavily + Exa (paralel) | Dedup gate + region lock |
-| `searxng` | SearXNG lokal | Meta-search tanpa key |
+| `searxng` | SearXNG lokal | Meta-search tanpa key; auto-off setelah koneksi gagal/timeout/5xx |
 | `exa` | Exa.ai API | Semantic search, butuh key |
 | `tavily` | Tavily API | LLM-oriented, butuh key |
 | `wikipedia` | MediaWiki API | Andal, tanpa key |
@@ -101,6 +102,48 @@ Checkpoint interaktif hanya muncul bila `stdin` TTY dan `--no-prompt` tidak
 dipakai. Di pipeline non-TTY / CI / `--no-prompt`, run berjalan seperti biasa
 tanpa pernah menunggu input atau menghapus file.
 
+### Internship Hunter (Mode 2)
+
+Wizard interaktif sekarang dimulai dengan pilihan modul utama:
+`[1] General Investigation (Sistem Lama)` atau
+`[2] Internship Hunter (Sistem Baru)`, lalu sub-menu pendekatan A/B/C
+(`[A]` role spesifik, `[B]` open discovery, `[C]` skill-based matching).
+Untuk otomasi:
+
+```bash
+python main.py --mode internship --internship-approach role \
+  --internship-role "AI Engineer" --no-prompt
+
+python main.py --mode internship --internship-approach skill \
+  --internship-skills "Python, Go, SQL, Docker" --no-prompt
+
+# offline deterministic smoke of the new module
+python main.py --mode internship --internship-approach role \
+  --internship-role "AI Engineer" --mock-search --no-llm --no-prompt
+```
+
+Planner menghasilkan **role murni** (contoh `AI Engineer`, bukan
+`AI Engineer Intern Indonesia`); lokasi/moda hanya metadata.  URL target
+dibangun langsung per sumber (A–G: JobStreet, Glints, Kalibrr, ITS Career
+Center, MSIB, LinkedIn-via-Tavily/Exa-dork, NodeFlair).  Setiap halaman
+diambil via Playwright (`page.wait_for_timeout(3000)`) bila browser
+tersedia, dengan fallback HTTP + BeautifulSoup; kartu lowongan diekstrak dari
+selector stabil (mis. `article[data-automation="normalJob"]`,
+`a[itemprop="name"]`, `div.inner-box`, `div.border.border-gray-200`) dan bila
+selector kosong, teks `<body>` dipecah baris untuk dikurasi LLM. NodeFlair
+selalu memakai Playwright + stealth.
+
+Lalu mode menulis `report.md`, `report_llm.md`, `internship_results.json`,
+`graph_interactive.html`, dan `internship_source_diagnostics.json` di folder
+run.  Tabel lowongan siap apply berada di bagian paling atas `report_llm.md`;
+mode kerja dinormalisasi ke `WFH`/`WFO`/`Hybrid` dan hanya kandidat dengan
+`is_valid_internship=true` yang disimpan.  Tabel diagnostik sumber
+(SUCCESS/EMPTY_RESULT/BLOCKED/TIMEOUT + HTTP + latensi + raw_chars_scraped +
+item + alasan) dicetak di terminal pada akhir eksekusi.  Mindmap memakai
+hierarki `Magang [Role] -> Perusahaan -> Posisi` dengan badge
+`KUERI/SARAN` (`#082F49`).  Seluruh kode baru berada di `src/drx/internship/`
+dan tidak mengubah loop Mode 1.
+
 Output lands in `runs/<run_id>/`:
 
 ```
@@ -110,7 +153,7 @@ report_sidecar.json       # {target_entity, verified_facts, disambiguated_entiti
                           #   (+ phase1: ringkasan ekstraktif, tidak dihapus)
 manifest.json             # budget / counters (+ ringkasan critic & llm_synthesis)
 graph.graphml             # knowledge graph (incremental, stable node IDs n1, n2, ...)
-graph_interactive.html    # mindmap canvas (hierarchical LR, light theme - PRD_design_new.md)
+graph_interactive.html    # mindmap canvas (hierarchical UD, dark neon - PRD_design.md)
 vectors_metadata.json     # argument cards
 parquet/raw_documents.parquet   # raw cleaned text bypass
 ```
@@ -227,28 +270,33 @@ Run -> P0 Query Planner (~400 token, 1x)
   Knowledge Graph yang sudah tervalidasi (subject–predicate–object + sumber)
   beserta chunk/kutipan yang melandasinya. Chunk parquet mentah yang tidak
   pernah diekstrak/diverifikasi tidak pernah dikirim ke LLM sintesis.
-* **Kanvas** (`drx/visualizer/graph_view.py`) mengikuti `PRD_design_new.md`
-  (Clean Minimalist Light Theme): latar off-white `#F8FAFC` + dot-grid
-  `#CBD5E1`, kartu node putih `#FFFFFF` dengan border aksen tipis dan soft
-  shadow, teks `#0F172A`, accent badge — root/prompt indigo
-  `#EEF2FF`/`#6366F1`, kueri cyan `#ECFEFF`/`#06B6D4`, individu ungu
-  `#F3E8FF`/`#A855F7`, instansi & perusahaan amber `#FEF3C7`/`#F59E0B`.
-  Kartu sengaja minimal (label saja; ID/tipe/provenance ada di tooltip +
-  inspector). Layout **Hierarchical Left-to-Right** (`direction: 'LR'`,
-  `sortMethod: 'directed'`, `nodeSpacing: 180`, `levelSeparation: 350`,
-  physics off) dengan level node eksplisit per cabang: `0` root query, `1`
-  fakta pencarian awal/Expand, dan `parent level + 1` untuk setiap pivot
-  (tanpa batas level). Kurva `cubicBezier forceDirection:
-  'horizontal'`; relasi mundur (*cross-edge*) disembunyikan default dan bisa
-  ditampilkan lewat toggle toolbar agar alur kiri→kanan tetap dominan.
-  Semantik edge dari `PRD_design.md` tetap berlaku (hijau *verified*,
-  putus-putus satu sumber, merah kontradiksi). Node terpilih mendapat
-  background/border `#3B82F6`, glow `#60A5FA`, border tebal; pemilihan memakai
-  **klik toggle** (bisa banyak), lalu tray `ID · label · level` + modal
-  konfirmasi sebelum satu batch pivot dikirim. Node yang sudah pernah dipivot
-  ditandai di tooltip/tray/modal. PyVis dimuat dari CDN (~30KB HTML); bila
-  `pyvis` tidak terpasang, render jatuh ke HTML statis yang tetap informatif.
-  Batas kanvas default dinaikkan ke **600 node** (`visualizer.max_nodes`).
+* **Kanvas** (`drx/visualizer/graph_view.py`) mengikuti `PRD_design.md`
+  (Dark Neon): latar `#0B0F17` + dot-grid `#1E293B`, kartu node `#151C2C`
+  berborder `#334155` dengan lebar tetap **180px**, teks `#F8FAFC`
+  (`Inter`/system-ui), dan badge kategori — INDIVIDU `#C084FC`, INSTANSI
+  `#FCD34D`, AKTOR `#FCA5A5`, VERIFIED `#6EE7B7`, KUERI `#38BDF8`.
+  Setiap node menyimpan **`short_label`** (1-3 kata, maks 20 karakter) dari
+  extractor LLM; `label` lengkap, `type`, `sources`, `grounding`, dan
+  `critic_reason` tetap utuh. Kartu kanvas hanya menampilkan `short_label`;
+  hover 200ms menampilkan tooltip (label lengkap + ringkasan 1 kalimat +
+  `Verified X Sumber`), dan klik membuka **Inspector Drawer 360px** berisi ID,
+  badge tipe, kutipan grounding, URL sumber interaktif, serta saran critic.
+  Layout **Hierarchical Top-to-Bottom** (`direction: 'UD'`,
+  `sortMethod: 'directed'`, `levelSeparation: 130`, `nodeSpacing: 180`,
+  `treeSpacing: 200`, physics off) dengan level node eksplisit per cabang:
+  `0` root query, `1` fakta pencarian awal/Expand, dan `parent level + 1`
+  untuk setiap pivot (tanpa batas level). Kurva `cubicBezier
+  forceDirection: 'vertical'`; relasi mundur (*cross-edge*) disembunyikan
+  default dan bisa ditampilkan lewat toggle toolbar. Semantik edge dari
+  `PRD_design.md` tetap berlaku (hijau *verified*, putus-putus satu sumber,
+  merah kontradiksi). Node terpilih mendapat border/glow `#38BDF8`; pemilihan
+  memakai **klik toggle** (bisa banyak), lalu tray `ID · label · level` +
+  modal konfirmasi sebelum satu batch pivot dikirim. Node yang sudah pernah
+  dipivot ditandai di tray/modal. Status token/URL/waktu berada di baris
+  terpisah **di bawah tombol kontrol** agar tidak tumpang tindih. PyVis
+  dimuat dari CDN (~30KB HTML); bila `pyvis` tidak terpasang, render jatuh ke
+  HTML statis yang tetap informatif. Batas kanvas default dinaikkan ke
+  **600 node** (`visualizer.max_nodes`).
 * **Mode Web App** (`drx/web/server.py`, stdlib `http.server`): server lokal
   loopback menyajikan `graph_interactive.html` + endpoint REST `/api/state`,
   `/api/graph`, `/api/pivot`, `/api/expand`, `/api/stop`. Klik node = toggle
@@ -257,13 +305,18 @@ Run -> P0 Query Planner (~400 token, 1x)
   dikirim lintas-thread via `asyncio.Queue`), dan halaman polling `/api/graph`
   tiap 2 detik sehingga mindmap, saran critic, riwayat pivot, serta statistik
   token/URL/waktu/biaya ter-update real-time.
-* **Groq multi-model fallback**: `qwen/qwen3.8-27b` → `openai/gpt-oss-120b` →
-  `llama-3.3-70b-versatile` (`llm.groq_fallback_model`); setiap model yang 404
-  / ditolak otomatis dilewati ke model berikutnya dalam satu request.
+* **Hierarki LLM**: PRIMARY Groq `openai/gpt-oss-120b` → SECONDARY Groq
+  `qwen/qwen3.8-27b` → TERTIARY Gemini. Gemini diletakkan paling akhir karena
+  kuota harian free tier hanya ~20 request; OpenRouter hanya dipakai bila
+  `llm.provider: openrouter` dipilih eksplisit.
 * **OTPM guard (Groq free tier ~1000)**: output Critic & Extraction dibatasi
   350–400 token (`llm.critic_max_output_tokens`, `llm.extraction_max_output_tokens`)
-  dan ada jeda `asyncio.sleep` 2 detik antar request Groq
-  (`llm.provider_min_interval_seconds`).
+  dan ada jeda **minimal 2 detik** antar request Groq
+  (`llm.provider_min_interval_seconds`; nilai konfigurasi di bawah 2 detik
+  tetap dinaikkan ke hard floor 2 detik).
+* **SearXNG circuit breaker**: SearXNG lokal dimatikan otomatis untuk sisa
+  sesi setelah connection refused, timeout, respons 5xx, atau body JSON rusak —
+  query pivot/expand berikutnya tidak menunggu layanan yang sama berulang kali.
 * Setelan terkait di `settings.yaml`: `llm.batch_max_input_tokens`,
   `llm.planner_enabled`, `llm.extraction_enabled`, `llm.critic_reads_triples`,
   `llm.use_mmr`, `llm.mmr_lambda`, `llm.groq_fallback_model`,

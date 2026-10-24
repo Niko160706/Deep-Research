@@ -207,7 +207,8 @@ async def analyze_fact_gaps(
     """Phase 2 entry point: nilai kecukupan bukti dan usulkan sub-kueri gap.
 
     Membaca dokumen Phase 1 dari parquet, memilih segmen paling relevan, lalu
-    meminta verdict JSON ke LLM (Gemini/OpenRouter/Groq). Dua percobaan: dengan
+    meminta verdict JSON ke LLM (Groq gpt-oss-120b → Groq qwen3.8-27b →
+    Gemini). Dua percobaan: dengan
     *native JSON mode* lalu tanpa (fallback untuk provider yang menolaknya).
     Tidak pernah melempar exception — kegagalan menjadi ``error`` /
     ``skipped_reason``.
@@ -227,8 +228,8 @@ async def analyze_fact_gaps(
         specs = resolve_providers(cfg, env)
         if not specs:
             result.skipped_reason = (
-                "API key LLM tidak ditemukan — set GEMINI_API_KEY (Google AI "
-                "Studio), OPENROUTER_API_KEY, atau GROQ_API_KEY di .env"
+                "API key LLM tidak ditemukan — set GROQ_API_KEY (primary) "
+                "atau GEMINI_API_KEY (fallback terakhir) di .env"
             )
             return result
         result.provider, result.model = specs[0].name, specs[0].model

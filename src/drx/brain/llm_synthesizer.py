@@ -7,16 +7,16 @@ relevant segments out of that parquet, fits them into a bounded prompt
 LLM for the final structured Markdown investigation report
 (``runs/<run_id>/report_llm.md``).
 
-Dual provider support:
+Provider hierarchy (extraction, critic, and synthesis share it):
 
-* **Primary** — Google AI Studio via ``google-genai`` (``GEMINI_API_KEY``),
-  default model ``gemini-3.8-flash`` with a comma-separated model fallback
-  chain (``gemini-3.7-flash,gemini-3.5-flash``) for retired models (404) /
-  transient high-demand (503).
-* **Fallback** — any OpenAI-compatible endpoint using the ``openai`` client:
-  OpenRouter (``OPENROUTER_API_KEY``) or Groq (``GROQ_API_KEY``); in ``auto``
-  mode the provider chain is gemini → openrouter → groq, so a total Gemini
-  outage automatically falls through to the next provider with a key.
+* **Primary** — Groq ``openai/gpt-oss-120b`` via the OpenAI-compatible API
+  (``GROQ_API_KEY``).
+* **Secondary** — Groq ``qwen/qwen3.8-27b`` as the first model fallback.
+* **Tertiary** — Google AI Studio via ``google-genai`` (``GEMINI_API_KEY``),
+  model ``gemini-3.8-flash`` with its own comma-separated fallback chain.
+  Gemini is last because its free daily quota is only ~20 requests/day.
+* **OpenRouter** is available only when selected explicitly; it is not part
+  of the ``auto`` chain.
 
 Design constraints (project-wide):
 
@@ -163,13 +163,13 @@ def resolve_providers(
 ) -> list[ProviderSpec]:
     """Semua provider LLM yang tersedia, urut prioritas (rantai failover).
 
-    ``auto`` (default) mengembalikan gemini → openrouter → groq untuk setiap
-    provider yang key-nya ada — sehingga kegagalan total Gemini (404 model
-    retire / 503 high-demand) otomatis jatuh ke provider berikutnya, bukan
-    menggagalkan seluruh sintesis. Groq sendiri membawa rantai model
-    ``qwen/qwen3.8-27b → openai/gpt-oss-120b → llama-3.3-70b-versatile``
-    (``groq_fallback_model``). Provider eksplisit mengembalikan rantai satu
-    elemen; daftar kosong berarti tidak ada yang tersedia (caller skip mulus).
+    ``auto`` (default) mengembalikan **groq → gemini** untuk setiap provider
+    yang key-nya ada. Spesifikasi Groq membawa rantai model
+    ``openai/gpt-oss-120b → qwen/qwen3.8-27b`` (``groq_fallback_model``);
+    Gemini baru dicoba setelah seluruh model Groq gagal, karena kuota
+    hariannya hanya ~20 request. OpenRouter tidak dimasukkan ke mode auto
+    (hanya dipakai bila ``provider: openrouter`` dipilih eksplisit). Daftar
+    kosong berarti tidak ada provider tersedia (caller skip mulus).
     """
     env = os.environ if env is None else env
     choice = (config.provider or "auto").strip().lower()
@@ -206,7 +206,7 @@ def resolve_providers(
             model=config.groq_model,
             api_key=groq_key,
             base_url=GROQ_BASE_URL,
-            # Groq free tier: qwen -> gpt-oss-120b -> llama-3.3-70b-versatile.
+            # PRIMARY gpt-oss-120b -> SECONDARY qwen3.8-27b.
             fallback_model=config.groq_fallback_model,
         )
 
@@ -218,12 +218,12 @@ def resolve_providers(
         return [_groq()] if groq_key else []
 
     specs: list[ProviderSpec] = []
-    if gemini_key:
-        specs.append(_gemini())
-    if openrouter_key:
-        specs.append(_openrouter())
     if groq_key:
         specs.append(_groq())
+    # Gemini is the final fallback (small daily quota: ~20 requests/day).
+    if gemini_key:
+        specs.append(_gemini())
+    # OpenRouter is deliberately excluded from auto; use provider="openrouter".
     return specs
 
 
@@ -674,9 +674,8 @@ def model_chain(spec: ProviderSpec) -> list[str]:
 
     ``fallback_model`` boleh berisi beberapa nama dipisah koma — dipakai untuk
     Gemini (``"gemini-3.7-flash, gemini-3.5-flash"``) maupun Groq
-    (``"openai/gpt-oss-120b,llama-3.3-70b-versatile"``). Setiap model yang
-    404 (retire), 503 (high demand), atau ditolak otomatis dilewati ke model
-    berikutnya.
+    (``"qwen/qwen3.8-27b"``). Setiap model yang 404 (retire), 503 (high
+    demand), atau ditolak otomatis dilewati ke model berikutnya.
     """
     models: list[str] = []
     for candidate in [spec.model, *(spec.fallback_model or "").split(",")]:
@@ -957,7 +956,7 @@ class OpenAICompatClient:
 
 
 def build_client(spec: ProviderSpec, config: LLMConfig) -> LLMClient:
-    """Provider factory: Gemini (primary) or OpenAI-compatible (fallback)."""
+    """Provider factory: Groq/OpenRouter (OpenAI-compatible) or Gemini."""
     if spec.name == "gemini":
         return GeminiClient(spec, config)
     return OpenAICompatClient(spec, config)
@@ -965,6 +964,9 @@ def build_client(spec: ProviderSpec, config: LLMConfig) -> LLMClient:
 
 # ---- provider rate guard (Groq OTPM 1000) ------------------------------------
 
+# Groq free tier membatasi output-token/menit (OTPM ~1000). Jeda ini adalah
+# hard floor: konfigurasi tidak boleh menurunkannya untuk request Groq riil.
+_GROQ_OTPM_MIN_INTERVAL_SECONDS = 2.0
 _provider_last_call: dict[str, float] = {}
 
 
@@ -1020,8 +1022,12 @@ async def generate_with_failover(
     errors: list[str] = []
     for spec, candidate in chain:
         if client is None and spec.name == "groq":
-            # Groq free tier: OTPM ~1000 -> beri jeda 2 detik antar request.
-            await _throttle_provider(spec.name, config.provider_min_interval_seconds)
+            # Groq free tier: OTPM ~1000 -> hard floor jeda 2 detik antar request.
+            interval = max(
+                _GROQ_OTPM_MIN_INTERVAL_SECONDS,
+                float(config.provider_min_interval_seconds or 0.0),
+            )
+            await _throttle_provider(spec.name, interval)
         try:
             if json_mode:
                 text, meta = await candidate.generate(system, user, json_mode=True)
@@ -1077,8 +1083,8 @@ async def synthesize_report(
         specs = resolve_providers(cfg, env)
         if not specs:
             result.skipped_reason = (
-                "API key LLM tidak ditemukan — set GEMINI_API_KEY (Google AI "
-                "Studio), OPENROUTER_API_KEY, atau GROQ_API_KEY di .env"
+                "API key LLM tidak ditemukan — set GROQ_API_KEY (primary) "
+                "atau GEMINI_API_KEY (fallback terakhir) di .env"
             )
             return result
         result.provider, result.model = specs[0].name, specs[0].model

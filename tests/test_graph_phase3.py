@@ -126,6 +126,10 @@ def test_export_graphml_with_labels_and_scalarized_lists(tmp_path: Path) -> None
     edge = payload if "predicate" in payload else next(iter(payload.values()))
     assert edge["predicate"] == "bekerja_di"
     assert edge["verified"] is True
+    # Display-only short labels survive export without replacing full labels.
+    assert graph.nodes[sri]["short_label"] == "Sri Lestari"
+    assert graph.nodes[dinkes]["short_label"].startswith("Dinas Kesehatan")
+    assert graph.nodes[dinkes]["label"] == "Dinas Kesehatan Sleman"
 
 
 def test_suggest_nodes_returns_grounded_ids_and_neighbors(tmp_path: Path) -> None:
@@ -186,6 +190,55 @@ def test_node_levels_pin_root_and_keep_first_seen_level(tmp_path: Path) -> None:
     by_label = {data.get("label"): data for _, data in graph.nodes(data=True)}
     assert int(by_label["Sri Lestari"]["level"]) == 0
     assert int(by_label["Puskesmas Depok"]["level"]) == 2
+
+
+def test_short_labels_are_llm_first_with_deterministic_fallback(
+    tmp_path: Path,
+) -> None:
+    store = GraphStore(tmp_path)
+    root_id = store.ensure_root("Sri Lestari")
+    store.resolve_and_add(
+        [
+            Fact(
+                subject="Sri Lestari",
+                predicate="bekerja_di",
+                object="Dinas Kesehatan Sleman",
+                provenance=[
+                    SourceRef(
+                        url="https://a.id",
+                        source_id="S1",
+                        quote="Sri Lestari bekerja di Dinas Kesehatan Sleman",
+                    )
+                ],
+                subject_short_label="Sri Lestari",
+                object_short_label="Dinkes Sleman",
+            ),
+            _fact(
+                "PT Jaya Abadi",
+                "bekerja_sama",
+                "Dinas Kesehatan Sleman",
+                "https://b.id",
+            ),
+        ]
+    )
+
+    records = {record["label"]: record for record in store.node_records()}
+    assert records["Sri Lestari"]["id"] == root_id
+    assert records["Sri Lestari"]["short_label"] == "Sri Lestari"
+    assert records["Dinas Kesehatan Sleman"]["short_label"] == "Dinkes Sleman"
+    assert records["Dinas Kesehatan Sleman"]["label"] == "Dinas Kesehatan Sleman"
+    assert records["PT Jaya Abadi"]["short_label"] == "PT Jaya Abadi"
+    # Legacy/fallback label is deterministic and always fits the 20-char card.
+    for record in records.values():
+        assert 1 <= len(record["short_label"].split()) <= 3
+        assert len(record["short_label"]) <= 20
+        assert record["label"]
+
+    path = store.export()
+    assert path is not None
+    graph = nx.read_graphml(path)
+    by_label = {data.get("label"): data for _, data in graph.nodes(data=True)}
+    assert by_label["Dinas Kesehatan Sleman"]["short_label"] == "Dinkes Sleman"
 
 
 def test_triples_limit_zero_returns_all_edges(tmp_path: Path) -> None:
