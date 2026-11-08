@@ -305,18 +305,20 @@ def test_upgrade_checksum_future_schema_and_rollback(tmp_path):
     db = Database(tmp_path / "state/db.sqlite3")
     migrate(db, target_version=1)
     owner(PersistenceAuthority(db))
-    assert migrate(db) == 2
+    assert migrate(db) == len(bundled_migrations())
     assert list((db.path.parent / "backups").glob("*.sqlite3"))
     original = bundled_migrations()
     with pytest.raises(RuntimeError, match="CHECKSUM"):
-        migrate(db, migrations=((1, original[0][1], original[0][2] + "\n-- changed"), original[1]))
+        migrate(
+            db, migrations=((1, original[0][1], original[0][2] + "\n-- changed"), *original[1:])
+        )
     with pytest.raises(RuntimeError, match="NEWER"):
         migrate(db, target_version=1)
     broken = (
         *original,
         (
-            3,
-            "0003_broken.sql",
+            len(original) + 1,
+            "next_broken.sql",
             "CREATE TABLE transient_test(id INTEGER);\nSELECT missing_column FROM projects;\n",
         ),
     )
@@ -327,7 +329,9 @@ def test_upgrade_checksum_future_schema_and_rollback(tmp_path):
             conn.execute("SELECT 1 FROM sqlite_master WHERE name='transient_test'").fetchone()
             is None
         )
-        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 2
+        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == len(
+            bundled_migrations()
+        )
         assert conn.execute("SELECT count(*) FROM projects").fetchone()[0] == 1
         db.check(conn)
 
@@ -598,8 +602,8 @@ def test_migration_cannot_hide_early_commit_in_comments(tmp_path):
     db = Database(tmp_path / "state/db.sqlite3")
     migrate(db)
     hidden = (
-        3,
-        "0003_hidden.sql",
+        len(bundled_migrations()) + 1,
+        "next_hidden.sql",
         "CREATE TABLE transient_test(id INTEGER);\n-- bypass attempt\nCOMMIT;\n",
     )
     with pytest.raises(sqlite3.DatabaseError):
@@ -609,7 +613,9 @@ def test_migration_cannot_hide_early_commit_in_comments(tmp_path):
             conn.execute("SELECT 1 FROM sqlite_master WHERE name='transient_test'").fetchone()
             is None
         )
-        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 2
+        assert conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == len(
+            bundled_migrations()
+        )
 
 
 def test_secret_sql_parameters_rejected_before_sqlite_sees_them(system):

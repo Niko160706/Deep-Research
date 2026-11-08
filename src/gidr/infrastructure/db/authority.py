@@ -119,6 +119,35 @@ class PersistenceAuthority:
         self.database = database
         self.policy = policy if policy is not None else SecretPolicy()
 
+    def replay[T: Contract](
+        self, command_id: str, request: Contract, result_type: type[T]
+    ) -> T | None:
+        """Replay before reopening referenced bytes; execute still rechecks in transaction."""
+        TypeAdapter(CommandId).validate_python(command_id, strict=True)
+        encoded = json.dumps(
+            {
+                "type": type(request).__module__ + "." + type(request).__qualname__,
+                "payload": request.model_dump(mode="json"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.policy.validate_json(encoded)
+        digest = hashlib.sha256(encoded.encode()).hexdigest()
+        with self.database.reader() as conn:
+            row = conn.execute(
+                "SELECT request_sha256,result_type,result_json FROM processed_commands WHERE command_id=?",
+                (command_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if (
+            row["request_sha256"] != digest
+            or row["result_type"] != result_type.__module__ + "." + result_type.__qualname__
+        ):
+            raise IdempotencyConflict("COMMAND_ID_REUSED_WITH_DIFFERENT_REQUEST")
+        return parse_contract(result_type, row["result_json"])
+
     def execute[T: Contract](
         self,
         command_id: str,

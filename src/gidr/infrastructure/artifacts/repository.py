@@ -61,6 +61,7 @@ OWNERS = {
 }
 # These structural FKs are a second safety check, not a substitute for artifact_refs.
 CONTENT_FKS = {
+    "run_checkpoints": ("artifact_id",),
     "plan_versions": ("snapshot_artifact_id",),
     "source_candidates": ("metadata_artifact_id",),
     "source_observations": ("artifact_id",),
@@ -117,20 +118,11 @@ class ArtifactRepository:
             finally:
                 self._prepared.references = previous
 
-    def attach(self, context: WriteContext, request: ReferenceRequest) -> StorageResult:
-        """Reusable inside the SAME transaction as a task/result/domain update."""
+    def register(self, context: WriteContext, ref: ArtifactRef) -> None:
+        """Catalog before relational owner insertion; caller attaches in the SAME transaction."""
         ready: frozenset[ArtifactRef] = getattr(self._prepared, "references", frozenset())
-        if request.reference not in ready:
+        if ref not in ready:
             raise ValueError("ARTIFACT_NOT_PREPARED_OUTSIDE_TRANSACTION")
-        ref = request.reference
-        table, key = OWNERS[request.owner_type]
-        if (
-            context.execute(
-                f'SELECT 1 FROM "{table}" WHERE "{key}"=?', (request.owner_id,)
-            ).fetchone()
-            is None
-        ):
-            raise ValueError("ARTIFACT_OWNER_MISSING")
         prior = context.execute(
             "SELECT sha256,size_bytes,status FROM artifact_catalog WHERE artifact_id=?",
             (ref.artifact_id,),
@@ -147,6 +139,19 @@ class ArtifactRepository:
                 "INSERT INTO artifact_catalog(artifact_id,sha256,size_bytes,category,status,created_at_utc) VALUES(?,?,?,'CONTENT','AVAILABLE',?)",
                 (ref.artifact_id, ref.sha256, ref.size_bytes, datetime.now(UTC).isoformat()),
             )
+
+    def attach(self, context: WriteContext, request: ReferenceRequest) -> StorageResult:
+        """Reusable inside the SAME transaction as a task/result/domain update."""
+        ref = request.reference
+        self.register(context, ref)
+        table, key = OWNERS[request.owner_type]
+        if (
+            context.execute(
+                f'SELECT 1 FROM "{table}" WHERE "{key}"=?', (request.owner_id,)
+            ).fetchone()
+            is None
+        ):
+            raise ValueError("ARTIFACT_OWNER_MISSING")
         context.execute(
             "INSERT OR IGNORE INTO artifact_refs VALUES(?,?,?,?,?)",
             (

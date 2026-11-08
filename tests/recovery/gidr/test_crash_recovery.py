@@ -14,7 +14,7 @@ from gidr.infrastructure.artifacts.store import ArtifactError, ArtifactStore
 from gidr.infrastructure.audit.projection import AuditExporter, events
 from gidr.infrastructure.db.authority import PersistenceAuthority
 from gidr.infrastructure.db.database import Database
-from gidr.infrastructure.db.migrate import migrate
+from gidr.infrastructure.db.migrate import bundled_migrations, migrate
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX SIGKILL exercised on Linux; Windows not claimed"
@@ -93,9 +93,11 @@ def test_blob_and_reference_reconcile_after_sigkill(tmp_path, stage):
 def test_migration_kill_preserves_last_committed_version(tmp_path, stage):
     launch(tmp_path, stage)
     db = Database(tmp_path / "state/db.sqlite3")
-    assert migrate(db) == 2
+    assert migrate(db) == len(bundled_migrations())
     with db.reader() as conn:
-        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 2
+        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == len(
+            bundled_migrations()
+        )
         db.check(conn)
 
 

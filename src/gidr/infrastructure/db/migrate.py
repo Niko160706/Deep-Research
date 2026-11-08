@@ -85,11 +85,10 @@ def migrate(
                         def authorize(
                             action: int, a: str | None, b: str | None, d: str | None, t: str | None
                         ) -> int:
-                            if (
-                                action == sqlite3.SQLITE_PRAGMA
-                                and a == "data_version"
-                                and b is None
+                            if action == sqlite3.SQLITE_PRAGMA and (
+                                (a == "data_version" and b is None) or a == "quick_check"
                             ):
+                                # ALTER TABLE ... CHECK invokes read-only quick_check(table).
                                 return sqlite3.SQLITE_OK
                             return (
                                 sqlite3.SQLITE_DENY
