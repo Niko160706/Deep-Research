@@ -1,19 +1,54 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "drx"
 version = "0.1.0"
 description = "Deep Research AI Agent - Dual-Stream investigative pipeline"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.14"
+dependencies = ["pydantic>=2.10,<3"]
+
+[project.scripts]
+gidr-check-config = "gidr.bootstrap:main"
+
+[dependency-groups]
+dev = [
+    "build>=1.2,<2",
+    "mypy>=1.10,<2",
+    "pytest>=8.2,<10",
+    "pytest-asyncio>=0.23,<2",
+    "ruff>=0.5,<1",
+    "setuptools==84.2.1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["gidr*"]
+
+[tool.setuptools.package-data]
+gidr = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/gidr"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --import-mode=importlib"
+
+[tool.uv]
+default-groups = ["dev"]
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 ignore = [
