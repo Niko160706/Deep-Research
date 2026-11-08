@@ -27,7 +27,7 @@ where = ["src"]
 include = ["gidr*"]
 
 [tool.setuptools.package-data]
-gidr = ["py.typed"]
+gidr = ["py.typed", "infrastructure/db/migrations/*.sql"]
 
 [tool.mypy]
 python_version = "3.12"

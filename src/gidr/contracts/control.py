@@ -114,7 +114,10 @@ class TaskCommand[P: Contract](Contract):
     created_at_utc: UTCDateTime
 
 
-class AuditEvent(Record):
+class AuditEvent(Contract):
+    # Global storage/migration events have no run; never invent a run ID.
+    run_id: RunId | None
+    created_at_utc: UTCDateTime
     seq: Positive | None = None
     committed_at_utc: UTCDateTime | None = None
     event_id: EventId
