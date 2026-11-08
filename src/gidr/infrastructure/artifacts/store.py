@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter
 
 from gidr.contracts.common import ArtifactRef, Digest
+from gidr.infrastructure.audit.policy import SecretPolicy
 from gidr.infrastructure.localfs import (
     LocalLock,
     private_directory,
@@ -32,6 +33,7 @@ class ArtifactStore:
         *,
         max_bytes: int = 10 * 1024 * 1024,
         forbidden_values: tuple[bytes, ...] = (),
+        secret_policy: SecretPolicy | None = None,
     ):
         if max_bytes < 1:
             raise ValueError("INVALID_ARTIFACT_LIMIT")
@@ -44,6 +46,7 @@ class ArtifactStore:
         self.lock = LocalLock(self.root / ".artifacts.lock")
         self.max_bytes = max_bytes
         self.forbidden_values = tuple(value for value in forbidden_values if value)
+        self.secret_policy = secret_policy
 
     def path(self, digest: str) -> Path:
         TypeAdapter(Digest).validate_python(digest, strict=True)
@@ -64,6 +67,7 @@ class ArtifactStore:
             size = 0
             tail = b""
             carry = max((len(value) for value in self.forbidden_values), default=1) - 1
+            policy_tail = b""
             try:
                 with os.fdopen(fd, "wb") as handle:
                     for chunk in chunks:
@@ -76,6 +80,15 @@ class ArtifactStore:
                         if any(value in combined for value in self.forbidden_values):
                             raise ArtifactError("SECRET_ARTIFACT_BLOCKED")
                         tail = combined[-carry:] if carry else b""
+                        if self.secret_policy is not None:
+                            policy_bytes = policy_tail + chunk
+                            try:
+                                self.secret_policy.validate_text(
+                                    policy_bytes.decode("utf-8", errors="replace")
+                                )
+                            except ValueError as exc:
+                                raise ArtifactError("SECRET_ARTIFACT_BLOCKED") from exc
+                            policy_tail = policy_bytes[-8192:]
                         handle.write(chunk)
                         digest.update(chunk)
                     handle.flush()

@@ -1,0 +1,1 @@
+"""Validated outbound transport boundary."""

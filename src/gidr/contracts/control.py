@@ -11,6 +11,8 @@ from gidr.contracts.common import (
     AttemptId,
     CommandId,
     Contract,
+    CredentialAlias,
+    Digest,
     EventId,
     GrantId,
     Name,
@@ -22,6 +24,7 @@ from gidr.contracts.common import (
     Record,
     RunId,
     SessionId,
+    SourceId,
     TaskId,
     Text,
     TraceId,
@@ -114,6 +117,21 @@ class TaskCommand[P: Contract](Contract):
     created_at_utc: UTCDateTime
 
 
+class SecurityEventDetail(Contract):
+    """Minimal security provenance; never carries URLs, headers, keys or response text."""
+
+    category: Name
+    request_id: Text
+    source_id: SourceId | None = None
+    url_sha256: Digest | None = None
+    content_sha256: Digest | None = None
+    status_code: Nonnegative | None = None
+    byte_count: Nonnegative | None = None
+    mime: Text | None = None
+    credential_alias: CredentialAlias | None = None
+    provider_id: Name | None = None
+
+
 class AuditEvent(Contract):
     # Global storage/migration events have no run; never invent a run ID.
     run_id: RunId | None
@@ -141,6 +159,7 @@ class AuditEvent(Contract):
     policy_version: Text
     input_refs: tuple[ArtifactRef, ...] = ()
     output_refs: tuple[ArtifactRef, ...] = ()
+    security: SecurityEventDetail | None = None
     reason_code: Name
     occurred_at_utc: UTCDateTime
 
