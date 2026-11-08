@@ -10,13 +10,27 @@ __pycache__/
 venv/
 
 # Secrets
-.env
+.env*
+!.env.example
 
 models.yaml
 settings.yaml
 # Runtime artifacts
 runs/
+/data/
 .browsers/
+
+# Private research specifications and development discussions (local only)
+/docs/
+/development/
+/*.md
+!/README.md
+/PRD_design*
+/product_requirements_document*
+/black_project*
+/[Dd]ata_json.json
+/test[123].json
+*:Zone.Identifier
 
 # Bundled Chromium system libs (installed without sudo)
 .chromium-deps/
