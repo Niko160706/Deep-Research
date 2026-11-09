@@ -113,7 +113,10 @@ class SourceCandidate(Record):
 
     @model_validator(mode="after")
     def matching_extension(self) -> Self:
-        if self.extension is not None and self.extension.kind != self.provider_id:
+        compatible = self.extension is None or self.extension.kind == self.provider_id
+        if isinstance(self.extension, WaybackMetadata) and self.provider_id == "wayback_cdx":
+            compatible = True
+        if not compatible:
             raise ValueError("Provider and typed extension disagree")
         return self
 
