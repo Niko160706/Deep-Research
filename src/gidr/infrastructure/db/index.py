@@ -102,13 +102,30 @@ class LexicalIndex:
 
         return self.authority.execute(command_id, trace_id, RebuildRequest(), IndexResult, change)
 
-    def search(self, query: str, *, limit: int = 20) -> tuple[dict[str, str | float], ...]:
-        if not query.strip() or len(query) > 4096 or not 1 <= limit <= 100:
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        expansions: tuple[str, ...] = (),
+    ) -> tuple[dict[str, str | float], ...]:
+        if (
+            not query.strip()
+            or len(query) > 4096
+            or not 1 <= limit <= 100
+            or len(expansions) > 8
+            or any(not term.strip() or len(term) > 256 for term in expansions)
+        ):
             raise ValueError("INVALID_SEARCH_BOUNDS")
+        self.authority.policy.validate_text(query + "\n" + "\n".join(expansions))
+        expanded_query = query
+        if expansions:
+            phrases = [f'"{term.replace(chr(34), chr(34) * 2)}"' for term in expansions]
+            expanded_query = f"({query}) OR " + " OR ".join(phrases)
         with self.authority.database.reader() as conn:
             rows = conn.execute(
-                "SELECT c.source_id,c.title,c.snippet,bm25(source_fts) AS score FROM source_fts JOIN source_index c ON c.rowid=source_fts.rowid WHERE source_fts MATCH ? ORDER BY score LIMIT ?",
-                (query, limit),
+                "SELECT c.source_id,c.title,c.snippet,bm25(source_fts,4.0,2.0,1.0) AS score FROM source_fts JOIN source_index c ON c.rowid=source_fts.rowid WHERE source_fts MATCH ? ORDER BY score LIMIT ?",
+                (expanded_query, limit),
             ).fetchall()
             return tuple(
                 {

@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlsplit
 
+import httpx
+
 from gidr.infrastructure.artifacts.quarantine import (
     QuarantineError,
     QuarantineRecord,
@@ -55,6 +57,60 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     def connect(self) -> None:
         raw = socket.create_connection((self._address, self._target.port), self.timeout)
         self.sock = self._ssl_context.wrap_socket(raw, server_hostname=self._target.hostname)
+
+
+class _PinnedHTTPXTransport(httpx.BaseTransport):
+    """HTTPX request lifecycle over a DNS-pinned HTTPS connection."""
+
+    def __init__(
+        self,
+        target: ValidatedURL,
+        address: str,
+        timeout: float,
+        deadline: float,
+        max_bytes: int,
+        clock: Callable[[], float],
+        connector: Callable[[ValidatedURL, str, float], http.client.HTTPSConnection],
+    ) -> None:
+        self._target = target
+        self._address = address
+        self._timeout = timeout
+        self._deadline = deadline
+        self._max_bytes = max_bytes
+        self._clock = clock
+        self._connector = connector
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        connection = self._connector(self._target, self._address, self._timeout)
+        try:
+            connection.request(
+                request.method,
+                request.url.raw_path.decode("ascii"),
+                headers={
+                    key.decode("ascii"): value.decode("latin-1")
+                    for key, value in request.headers.raw
+                },
+            )
+            upstream = connection.getresponse()
+            body = bytearray()
+            while len(body) <= self._max_bytes:
+                remaining = self._deadline - self._clock()
+                if remaining <= 0:
+                    raise TimeoutError("FETCH_TIMEOUT")
+                if connection.sock is not None:
+                    connection.sock.settimeout(remaining)
+                part = upstream.read(min(65536, self._max_bytes + 1 - len(body)))
+                if not part:
+                    break
+                body.extend(part)
+            return httpx.Response(
+                status_code=upstream.status,
+                headers=upstream.getheaders(),
+                content=bytes(body),
+                request=request,
+            )
+        finally:
+            connection.close()
 
 
 class FetchBroker:
@@ -175,19 +231,32 @@ class FetchBroker:
                 remaining = deadline - self._clock()
                 if remaining <= 0:
                     raise FetchError("FETCH_TIMEOUT")
-                conn = None
                 if target.scheme != "https":
                     raise FetchError("HTTP_TRANSPORT_DISABLED")
-                conn = self._connector(target, target.addresses[0], min(remaining, self._timeout))
-                path = urlsplit(target.url).path or "/"
-                if urlsplit(target.url).query:
-                    path += "?" + urlsplit(target.url).query
                 host_header = f"[{target.hostname}]" if ":" in target.hostname else target.hostname
-                conn.request("GET", path, headers={**safe_headers, "Host": host_header})
-                response = conn.getresponse()
-                location = response.getheader("Location")
-                if response.status in {301, 302, 303, 307, 308}:
-                    response.read(min(self._max_bytes, 65536))
+                transport = _PinnedHTTPXTransport(
+                    target,
+                    target.addresses[0],
+                    min(remaining, self._timeout),
+                    deadline,
+                    self._max_bytes,
+                    self._clock,
+                    self._connector,
+                )
+                with httpx.Client(
+                    transport=transport,
+                    follow_redirects=False,
+                    trust_env=False,
+                    timeout=min(remaining, self._timeout),
+                ) as client:
+                    response = client.get(
+                        target.url,
+                        headers={**safe_headers, "Host": host_header},
+                    )
+                if len(response.content) > self._max_bytes:
+                    raise FetchError("RESPONSE_SIZE_LIMIT")
+                location = response.headers.get("location")
+                if response.status_code in {301, 302, 303, 307, 308}:
                     if redirect_count >= self._max_redirects or not location:
                         raise FetchError("REDIRECT_LIMIT_OR_LOCATION")
                     next_url = self._policy.redirect(current, location)
@@ -199,31 +268,14 @@ class FetchBroker:
                     self._record(
                         "REDIRECT_ALLOWED", "REDIRECT_REVALIDATED", request_id, source_id, next_url
                     )
-                    conn.close()
-                    conn = None
                     current = next_url
                     continue
-                length = response.getheader("Content-Length")
+                length = response.headers.get("content-length")
                 if length is not None and (not length.isdecimal() or int(length) > self._max_bytes):
                     raise FetchError("RESPONSE_SIZE_LIMIT")
-                chunks: list[bytes] = []
-                total = 0
-                while True:
-                    remaining = deadline - self._clock()
-                    if remaining <= 0:
-                        raise FetchError("FETCH_TIMEOUT")
-                    if conn.sock is not None:
-                        conn.sock.settimeout(remaining)
-                    chunk = response.read(min(65536, self._max_bytes + 1 - total))
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > self._max_bytes:
-                        raise FetchError("RESPONSE_SIZE_LIMIT")
-                    chunks.append(chunk)
                 safe_response_headers = {
                     key.lower(): value[:2048]
-                    for key, value in response.getheaders()
+                    for key, value in response.headers.items()
                     if key.lower()
                     in {
                         "content-type",
@@ -233,11 +285,11 @@ class FetchBroker:
                         "content-language",
                     }
                 }
-                body = b"".join(chunks)
+                body = response.content
                 try:
                     quarantine = self._quarantine.store(
                         body,
-                        declared_mime=response.getheader("Content-Type"),
+                        declared_mime=response.headers.get("content-type"),
                     )
                 except QuarantineError as exc:
                     quarantine_category: SecurityCategory = (
@@ -268,7 +320,9 @@ class FetchBroker:
                     )
                     raise FetchError("RESPONSE_QUARANTINED")
                 response_category: SecurityCategory = (
-                    "PROVIDER_AUTH_FAILURE" if response.status in {401, 403} else "OUTBOUND_REQUEST"
+                    "PROVIDER_AUTH_FAILURE"
+                    if response.status_code in {401, 403}
+                    else "OUTBOUND_REQUEST"
                 )
                 self._record(
                     response_category,
@@ -276,7 +330,7 @@ class FetchBroker:
                     request_id,
                     source_id,
                     current,
-                    status=response.status,
+                    status=response.status_code,
                     byte_count=len(body),
                     content_sha256=quarantine.sha256,
                     mime=quarantine.detected_mime,
@@ -286,7 +340,7 @@ class FetchBroker:
                 )
                 return FetchResponse(
                     current,
-                    response.status,
+                    response.status_code,
                     safe_response_headers,
                     body,
                     redirect_count,
@@ -310,14 +364,11 @@ class FetchBroker:
             )
             self._record(fetch_error_category, exc.reason, request_id, source_id, current)
             raise
-        except (OSError, http.client.HTTPException, ssl.SSLError) as exc:
+        except (OSError, http.client.HTTPException, ssl.SSLError, httpx.HTTPError) as exc:
             self._record(
                 "OUTBOUND_REQUEST", "FETCH_TRANSPORT_FAILED", request_id, source_id, current
             )
             raise FetchError("FETCH_TRANSPORT_FAILED") from exc
-        finally:
-            if "conn" in locals() and conn is not None:
-                conn.close()
 
     def _record(
         self,
@@ -357,6 +408,7 @@ class FetchBroker:
         result: dict[str, str] = {
             "User-Agent": "GIDR/0.1 (+research metadata fetch)",
             "Accept": "*/*",
+            "Accept-Encoding": "identity",
         }
         for key, value in headers.items():
             if (

@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Deep Research AI Agent - Dual-Stream investigative pipeline"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "httpx>=0.27,<1",
     "keyring>=25.7,<27",
     "pydantic>=2.10,<3",
     "secretstorage>=3.3,<4",
