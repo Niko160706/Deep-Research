@@ -132,7 +132,9 @@ class ModelGatewayService:
                 attempt_no += 1
                 same_provider_attempt += 1
                 try:
-                    reserved = await self._authority.reserve(task, adapter.profile, attempt_no)
+                    reserved = await self._authority.reserve(
+                        task, call, execution_id, adapter.profile, attempt_no
+                    )
                 except ModelAttemptDenied:
                     raise
                 except Exception:
@@ -141,6 +143,7 @@ class ModelGatewayService:
                 if (
                     permit.task_id != task.task_id
                     or permit.run_id != task.run_id
+                    or permit.execution_id != execution_id
                     or permit.provider_id != adapter.profile.provider_id
                     or permit.reservation_id != task.reservation_id
                 ):
@@ -214,7 +217,7 @@ class ModelGatewayService:
             or selected_output is None
             or validated_output is None
         ):
-            return self._failed_result(
+            failure = self._failed_result(
                 task,
                 execution_id,
                 tuple(attempt_ids),
@@ -225,6 +228,11 @@ class ModelGatewayService:
                 usage_charges,
                 self._elapsed(started),
             )
+            try:
+                await self._authority.record_failure(task, failure)
+            except Exception:
+                raise ModelOutputPersistenceError("MODEL_FAILURE_AUDIT_COMMIT_FAILED") from None
+            return failure
 
         try:
             self._secrets.validate_text(validated_output.decode("utf-8"))
@@ -238,7 +246,9 @@ class ModelGatewayService:
                 attempt_charge=selected_output.charge,
                 provider_id=selected_provider.profile.provider_id,
                 model_id=selected_output.model_id,
+                model_version=selected_output.model_version,
                 prompt_version=call.prompt_version,
+                decision=selected_output.decision,
                 tokens=self._aggregate_tokens(usage_tokens),
                 charge=self._aggregate_charges(usage_charges),
                 attempt_ids=tuple(attempt_ids),

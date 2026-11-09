@@ -9,7 +9,14 @@ from typing import Literal, Protocol
 
 from pydantic import Field
 
-from gidr.contracts.common import ArtifactRef, Contract, Language, Name, Positive, Text
+from gidr.contracts.common import (
+    ArtifactRef,
+    Contract,
+    Language,
+    Name,
+    Positive,
+    Text,
+)
 from gidr.contracts.models import (
     FinancialCharge,
     ModelErrorCode,
@@ -121,6 +128,7 @@ class ModelDispatchPermit:
     attempt_id: str
     run_id: str
     task_id: str
+    execution_id: str
     provider_id: str
     reservation_id: str
     dispatch: ModelHTTPDispatch
@@ -169,7 +177,12 @@ class ModelAttemptAuthority(Protocol):
     """Atomic StateAuthority adapter: reserves and authorizes one provider attempt."""
 
     async def reserve(
-        self, task: ModelTask, profile: ProviderProfile, attempt_number: int
+        self,
+        task: ModelTask,
+        call: ModelCall,
+        execution_id: str,
+        profile: ProviderProfile,
+        attempt_number: int,
     ) -> ReservedModelAttempt: ...
 
     async def settle_failure(
@@ -184,6 +197,8 @@ class ModelAttemptAuthority(Protocol):
     async def cooldown_remaining(self, provider_id: str) -> float: ...
 
     async def impose_cooldown(self, provider_id: str, seconds: float) -> None: ...
+
+    async def record_failure(self, task: ModelTask, result: ModelExecutionResult) -> None: ...
 
 
 class ModelOutputPublisher(Protocol):
@@ -201,7 +216,9 @@ class ModelOutputPublisher(Protocol):
         attempt_charge: FinancialCharge,
         provider_id: str,
         model_id: str,
+        model_version: str | None,
         prompt_version: str,
+        decision: TypedDecision | None,
         tokens: TokenUsage,
         charge: FinancialCharge,
         attempt_ids: tuple[str, ...],

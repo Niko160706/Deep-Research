@@ -14,6 +14,7 @@ from gidr.contracts.common import (
     Contract,
     DecisionId,
     Fraction,
+    GrantId,
     Language,
     ModelExecutionId,
     Name,
@@ -189,14 +190,14 @@ class TranslationArtifact(Record):
 class ModelTask(Record):
     task_id: TaskId
     plan_version: Positive | None
-    authorization_ref: Text
+    authorization_ref: GrantId
     task_type: Name
     required_capabilities: Annotated[tuple[Name, ...], Field(min_length=1)]
     input_refs: Annotated[tuple[ArtifactRef, ...], Field(min_length=1)]
     input_language: Language
     risk_class: Literal["LOW", "MEDIUM", "HIGH"]
     output_schema_version: Literal["1.0"] = "1.0"
-    reservation_id: Text
+    reservation_id: AttemptId
     attempt_limit: Positive
     preferred_provider: Name
     allowed_fallbacks: tuple[Name, ...] = ()

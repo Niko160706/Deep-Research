@@ -70,7 +70,7 @@ class OpenAICompatibleProvider:
             raise ProviderFailure("POLICY_BLOCK")
         if permit.provider_id != self.profile.provider_id:
             raise ProviderFailure("POLICY_BLOCK")
-        if call.schema_name is None or call.schema_version is None:
+        if call.schema_name is None or call.output_schema_version is None:
             raise ProviderFailure("SCHEMA_INVALID")
         try:
             handle = self._secrets.resolve(self._alias)
@@ -83,7 +83,10 @@ class OpenAICompatibleProvider:
         )
         if call.output_json_schema is not None:
             schema_text = json.dumps(call.output_json_schema, ensure_ascii=False, sort_keys=True)
-            trust_directive += f" Schema name={call.schema_name}; version={call.schema_version}; schema={schema_text}"
+            trust_directive += (
+                f" Schema name={call.schema_name}; version={call.output_schema_version}; "
+                f"schema={schema_text}"
+            )
         messages = [
             {"role": "system", "content": trust_directive},
             {

@@ -8,12 +8,15 @@ version = "0.1.0"
 description = "Deep Research AI Agent - Dual-Stream investigative pipeline"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "keyring>=25.7,<27",
     "pydantic>=2.10,<3",
+    "secretstorage>=3.3,<4",
     "typesafe-sdk==0.7.2",
 ]
 
 [project.scripts]
 gidr-check-config = "gidr.bootstrap:main"
+gidr-credential = "gidr.infrastructure.security.credentials_cli:main"
 
 [dependency-groups]
 dev = [

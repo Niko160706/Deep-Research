@@ -86,10 +86,18 @@ class FakeAuthority:
         self.dispatch = dispatch or FakeDispatch()
         self.reservations: list[tuple[str, int]] = []
         self.settlements: list[tuple[str, TokenUsage, FinancialCharge]] = []
+        self.failures = []
         self.cooldowns: dict[str, float] = {}
         self.deny = False
 
-    async def reserve(self, task: ModelTask, profile: ProviderProfile, attempt_number: int):
+    async def reserve(
+        self,
+        task: ModelTask,
+        call,
+        execution_id: str,
+        profile: ProviderProfile,
+        attempt_number: int,
+    ):
         if self.deny:
             raise ModelAttemptDenied("TEST_BUDGET_DENIED")
         attempt_id = new_id("ATT")
@@ -98,6 +106,7 @@ class FakeAuthority:
             attempt_id=attempt_id,
             run_id=task.run_id,
             task_id=task.task_id,
+            execution_id=execution_id,
             provider_id=profile.provider_id,
             reservation_id=task.reservation_id,
             dispatch=self.dispatch,
@@ -120,6 +129,9 @@ class FakeAuthority:
 
     async def impose_cooldown(self, provider_id: str, seconds: float) -> None:
         self.cooldowns[provider_id] = seconds
+
+    async def record_failure(self, task: ModelTask, result) -> None:
+        self.failures.append(result)
 
 
 class FakePublisher(ModelOutputPublisher):
@@ -197,7 +209,7 @@ def task(
         input_refs=(ref,),
         input_language=language or Language(code="en", status="DECLARED"),
         risk_class="LOW",
-        reservation_id="RES-TEST",
+        reservation_id="ATT-reservation-test",
         attempt_limit=3,
         preferred_provider=preferred,
         allowed_fallbacks=fallbacks,
@@ -776,8 +788,9 @@ async def test_transport_blocks_redirects_oversized_and_secret_bearing_responses
         attempt_id=new_id("ATT"),
         run_id=new_id("RUN"),
         task_id=new_id("TASK"),
+        execution_id=new_id("MOD"),
         provider_id="jev",
-        reservation_id="RES-TEST",
+        reservation_id=new_id("ATT"),
         dispatch=FakeDispatch(ModelHTTPResponse(302, {"location": "http://127.0.0.1/"}, b"")),
         opaque_token=object(),
     )
@@ -804,8 +817,9 @@ async def test_transport_blocks_redirects_oversized_and_secret_bearing_responses
         attempt_id=new_id("ATT"),
         run_id=new_id("RUN"),
         task_id=new_id("TASK"),
+        execution_id=new_id("MOD"),
         provider_id="jev",
-        reservation_id="RES-TEST",
+        reservation_id=new_id("ATT"),
         dispatch=FakeDispatch(
             ModelHTTPResponse(200, {}, b"synthetic-response-canary must never return")
         ),

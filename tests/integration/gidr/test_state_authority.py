@@ -340,7 +340,7 @@ def test_upgrade_b02_database_keeps_checksums_and_data(tmp_path):
         hashes = [
             r[0] for r in conn.execute("SELECT checksum FROM schema_migrations ORDER BY version")
         ]
-    assert migrate(db) == 3
+    assert migrate(db) == 4
     with db.reader() as conn:
         assert hashes == [
             r[0]

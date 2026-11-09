@@ -72,7 +72,7 @@ def task(source_ref: ArtifactRef) -> ModelTask:
         input_refs=(source_ref,),
         input_language=Language(code="en", status="DECLARED"),
         risk_class="MEDIUM",
-        reservation_id="RES-TRANSLATION",
+        reservation_id="ATT-TRANSLATION",
         attempt_limit=2,
         preferred_provider="gemini",
         allowed_fallbacks=(),

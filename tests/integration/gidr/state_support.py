@@ -118,18 +118,19 @@ class Harness:
         return self.authority.port(command.actor, holder).handle(command)
 
     def policy(self, grant="GRANT-one", **changes):
-        return dto.GrantPolicy(
-            grant_id=grant,
-            providers=("local",),
-            categories=("local",),
-            task_types=("compute", "other"),
-            max_cost_usd=Decimal(2),
-            max_tokens=100,
-            max_requests=10,
-            **changes,
-        )
+        values = {
+            "grant_id": grant,
+            "providers": ("local",),
+            "categories": ("local",),
+            "task_types": ("compute", "other"),
+            "max_cost_usd": Decimal(2),
+            "max_tokens": 100,
+            "max_requests": 10,
+        }
+        values.update(changes)
+        return dto.GrantPolicy(**values)
 
-    def plan(self, run="RUN-one", name="one", expected=0):
+    def plan(self, run="RUN-one", name="one", expected=0, categories=("local",)):
         budget = self.store.publish(b"Synthetic budget policy, no real billing")
         return ResearchPlanProposal(
             run_id=run,
@@ -147,11 +148,11 @@ class Harness:
                     evidence_requirements=("Original synthetic fixture",),
                 ),
             ),
-            source_categories=("local",),
+            source_categories=categories,
             budget_policy_ref=budget,
         )
 
-    def setup(self, name="one", *, start=True, policy=None):
+    def setup(self, name="one", *, start=True, policy=None, categories=("local",)):
         run = "RUN-" + name
         result = self.send(
             dto.CreateRun(
@@ -164,7 +165,9 @@ class Harness:
         )
         assert result.accepted, result
         assert self.send(dto.ChangeRun(target="PLANNING", reason="USER_REQUEST"), run=run).accepted
-        ref = self.store.publish(self.plan(run, name).model_dump_json().encode())
+        ref = self.store.publish(
+            self.plan(run, name, categories=categories).model_dump_json().encode()
+        )
         result = self.send(
             dto.PublishPlan(snapshot_ref=ref, plan_id="PLAN-" + name, plan_version_id="PV-" + name),
             run=run,

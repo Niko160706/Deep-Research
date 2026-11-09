@@ -6,8 +6,8 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Self
 from uuid import uuid4
@@ -142,6 +142,20 @@ class StateAuthority:
         context, self._instance = self._instance, None
         if context is not None:
             context.__exit__(None, None, None)
+
+    @contextmanager
+    def model_operation(self) -> Iterator[None]:
+        """Hold the single authority lifetime while a trusted model commit runs."""
+        with self._condition:
+            require(self._owned and not self._closing, "INSTANCE_NOT_OWNED")
+            require(not self._startup, "STARTUP_RECOVERY_IN_PROGRESS")
+            self._calls += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._calls -= 1
+                self._condition.notify_all()
 
     def port(self, actor: dto.Actor, worker_id: str | None = None) -> CommandPort:
         return CommandPort(self, actor, worker_id)
@@ -1122,8 +1136,13 @@ class StateAuthority:
         if task["not_before_utc"]:
             require(time_value(task["not_before_utc"]) <= self.clock(), "TASK_COOLDOWN_ACTIVE")
         if spec.work_kind == "PROVIDER":
-            # Activation is deliberately closed until the security batch wires its broker.
-            raise Rejected("EXTERNAL_SECURITY_GATE_UNVERIFIED_B04")
+            if spec.category != "model" or spec.provider_id not in {
+                "jev",
+                "gemini",
+                "groq",
+                "siliconflow",
+            }:
+                raise Rejected("EXTERNAL_SECURITY_GATE_UNVERIFIED_B04")
         return grant, spec
 
     def _add_tasks(

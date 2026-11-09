@@ -105,7 +105,7 @@ class SecretManager:
     @staticmethod
     def _from_keyring(alias: str) -> str | None:
         try:
-            import keyring  # type: ignore[import-not-found]
+            import keyring
 
             backend = keyring.get_keyring()
             if getattr(backend, "priority", 0) <= 0:
