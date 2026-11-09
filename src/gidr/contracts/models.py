@@ -73,12 +73,23 @@ class ChoiceDecision(Contract):
     choices: Annotated[tuple[Text, ...], Field(min_length=2)]
     selected: Text
     confidence: DecisionConfidence = Field(default_factory=DecisionConfidence)
+    probabilities: dict[Text, Fraction] | None = None
 
     @model_validator(mode="after")
     def valid_choice(self) -> Self:
         if self.selected not in self.choices or len(set(self.choices)) != len(self.choices):
             raise ValueError("Selected answer must be one of the distinct declared choices")
+        if self.probabilities is not None and set(self.probabilities) != set(self.choices):
+            raise ValueError("Provider probabilities must cover exactly the declared choices")
         return self
+
+
+class NoulDecision(Contract):
+    """A provider's direct yes probability; it is not a factual verdict."""
+
+    kind: Literal["NOUL"] = "NOUL"
+    probability: Fraction
+    confidence: DecisionConfidence = Field(default_factory=DecisionConfidence)
 
 
 class ScoreDecision(Contract):
@@ -86,9 +97,33 @@ class ScoreDecision(Contract):
     score: Fraction
     rubric_version: Text
     confidence: DecisionConfidence = Field(default_factory=DecisionConfidence)
+    raw_provider_score: float | None = None
+    probabilities: dict[int, Fraction] | None = None
+    legend: dict[int, Text] | None = None
+
+    @model_validator(mode="after")
+    def valid_distribution(self) -> Self:
+        if self.probabilities is not None and self.legend is not None:
+            if set(self.probabilities) != set(self.legend):
+                raise ValueError("Provider score probabilities and legend keys must agree")
+        return self
 
 
-TypedDecision = Annotated[ChoiceDecision | ScoreDecision, Field(discriminator="kind")]
+TypedDecision = Annotated[
+    ChoiceDecision | NoulDecision | ScoreDecision, Field(discriminator="kind")
+]
+
+ModelErrorCode = Literal[
+    "TIMEOUT",
+    "RATE_LIMIT",
+    "AUTH",
+    "SCHEMA_INVALID",
+    "CONTEXT_TOO_LONG",
+    "LANGUAGE_UNSUPPORTED",
+    "POLICY_BLOCK",
+    "BUDGET_EXCEEDED",
+    "PROVIDER_OUTAGE",
+]
 
 
 class DecisionRecord(Record):
@@ -113,20 +148,7 @@ class ModelExecutionResult(Record):
     status: Literal["SUCCESS", "FAILED", "DEFERRED"]
     output_ref: ArtifactRef | None = None
     decision: TypedDecision | None = None
-    error_code: (
-        Literal[
-            "TIMEOUT",
-            "RATE_LIMIT",
-            "AUTH",
-            "SCHEMA_INVALID",
-            "CONTEXT_TOO_LONG",
-            "LANGUAGE_UNSUPPORTED",
-            "POLICY_BLOCK",
-            "BUDGET_EXCEEDED",
-            "PROVIDER_OUTAGE",
-        ]
-        | None
-    ) = None
+    error_code: ModelErrorCode | None = None
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     charge: FinancialCharge = Field(default_factory=FinancialCharge)
     latency_ms: Nonnegative | None = None
