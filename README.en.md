@@ -2,7 +2,7 @@
 
 **Deep research with traceable evidence, explicit limits, and room to investigate further.**
 
-Black Project is an experimental research system built around **GIDR (General Intelligence Deep Research)**. It investigates a question by breaking it into smaller research questions, finding relevant sources, retrieving selected documents, examining evidence, and recording what can—and cannot—be established.
+Black Project is an experimental research system built around **GIDR (General Intelligence Deep Research)**. It investigates a question by breaking it into smaller research questions, finding relevant sources, retrieving selected documents, examining evidence, and recording what can and cannot be established.
 
 The goal is not to produce the longest answer or collect the most links. It is to build a research trail that can be inspected: where an assertion came from, which passage supports it, what remains uncertain, and why the investigation stopped.
 
